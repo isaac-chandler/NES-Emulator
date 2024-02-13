@@ -1,0 +1,1541 @@
+hex_digits :: "0123456789ABCDEF"
+
+print_hex :: (value: u16) {
+    digit := (value >> 12) & 0xF
+    error_print(hex_digits[digit..digit + 1])
+    
+    digit = (value >> 8) & 0xF
+    error_print(hex_digits[digit..digit + 1])
+    
+    digit = (value >> 4) & 0xF
+    error_print(hex_digits[digit..digit + 1])
+    
+    digit = (value >> 0) & 0xF
+    error_print(hex_digits[digit..digit + 1])
+}
+
+print_hex :: (value: u8) {
+    digit := (value >> 4) & 0xF
+    error_print(hex_digits[digit..digit + 1])
+    
+    digit = (value >> 0) & 0xF
+    error_print(hex_digits[digit..digit + 1])
+}
+
+NMI_VECTOR   :: 0xFFFA
+RESET_VECTOR :: 0xFFFC
+IRQ_VECTOR   :: 0xFFFE
+
+branch_t1 :: (using cpu: *Cpu_6502, bus: u8, taken: bool) {
+    pc += 1
+    if taken {
+        address = sign_extend(bus)
+        state = .T2
+    } else {
+        state = .T0
+    }
+}
+
+Cpu_6502 :: struct {
+    pc: u16
+    a:  u8
+    x:  u8
+    y:  u8
+    sp: u8
+    
+    
+    index:   u8
+    address: u16
+    instruction: enum u8 {
+        BRK             :: 0x00
+        ORA_X_INDIRECT  :: 0x01
+        ORA_ZERO_PAGE   :: 0x05
+        ASL_ZERO_PAGE   :: 0x06
+        PHP             :: 0x08
+        ORA_IMMEDIATE   :: 0x09
+        ASL_A           :: 0x0A
+        ORA_ABSOLUTE    :: 0x0D
+        ASL_ABSOLUTE    :: 0x0E
+        BPL             :: 0x10
+        ORA_INDIRECT_Y  :: 0x11
+        ORA_ZERO_PAGE_X :: 0x15
+        ASL_ZERO_PAGE_X :: 0x16
+        CLC             :: 0x18
+        ORA_ABSOLUTE_Y  :: 0x19
+        ORA_ABSOLUTE_X  :: 0x1D
+        ASL_ABSOLUTE_X  :: 0x1E
+        
+        JSR             :: 0x20
+        AND_X_INDIRECT  :: 0x21
+        BIT_ZERO_PAGE   :: 0x24
+        AND_ZERO_PAGE   :: 0x25
+        ROL_ZERO_PAGE   :: 0x26
+        PLP             :: 0x28
+        AND_IMMEDIATE   :: 0x29
+        ROL_A           :: 0x2A
+        BIT_ABSOLUTE    :: 0x2C
+        AND_ABSOLUTE    :: 0x2D
+        ROL_ABSOLUTE    :: 0x2E
+        BMI             :: 0x30
+        AND_INDIRECT_Y  :: 0x31
+        AND_ZERO_PAGE_X :: 0x35
+        ROL_ZERO_PAGE_X :: 0x36
+        SEC             :: 0x38
+        AND_ABSOLUTE_Y  :: 0x39
+        AND_ABSOLUTE_X  :: 0x3D
+        ROL_ABSOLUTE_X  :: 0x3E
+        
+        RTI             :: 0x40
+        EOR_X_INDIRECT  :: 0x41
+        EOR_ZERO_PAGE   :: 0x45
+        LSR_ZERO_PAGE   :: 0x46
+        PHA             :: 0x48
+        EOR_IMMEDIATE   :: 0x49
+        LSR_A           :: 0x4A
+        JMP_ABSOLUTE    :: 0x4C
+        EOR_ABSOLUTE    :: 0x4D
+        LSR_ABSOLUTE    :: 0x4E
+        BVC             :: 0x50
+        EOR_INDIRECT_Y  :: 0x51
+        EOR_ZERO_PAGE_X :: 0x55
+        LSR_ZERO_PAGE_X :: 0x56
+        CLI             :: 0x58
+        EOR_ABSOLUTE_Y  :: 0x59
+        EOR_ABSOLUTE_X  :: 0x5D
+        LSR_ABSOLUTE_X  :: 0x5E
+        
+        RTS             :: 0x60
+        ADC_X_INDIRECT  :: 0x61
+        ADC_ZERO_PAGE   :: 0x65
+        ROR_ZERO_PAGE   :: 0x66
+        PLA             :: 0x68
+        ADC_IMMEDIATE   :: 0x69
+        ROR_A           :: 0x6A
+        JMP_INDIRECT    :: 0x6C
+        ADC_ABSOLUTE    :: 0x6D
+        ROR_ABSOLUTE    :: 0x6E
+        BVS             :: 0x70
+        ADC_INDIRECT_Y  :: 0x71
+        ADC_ZERO_PAGE_X :: 0x75
+        ROR_ZERO_PAGE_X :: 0x76
+        SEI             :: 0x78
+        ADC_ABSOLUTE_Y  :: 0x79
+        ADC_ABSOLUTE_X  :: 0x7D
+        ROR_ABSOLUTE_X  :: 0x7E
+        
+        STA_X_INDIRECT  :: 0x81
+        STY_ZERO_PAGE   :: 0x84
+        STA_ZERO_PAGE   :: 0x85
+        STX_ZERO_PAGE   :: 0x86
+        DEY             :: 0x88
+        TXA             :: 0x8A
+        STY_ABSOLUTE    :: 0x8C
+        STA_ABSOLUTE    :: 0x8D
+        STX_ABSOLUTE    :: 0x8E
+        BCC             :: 0x90
+        STA_INDIRECT_Y  :: 0x91
+        STY_ZERO_PAGE_X :: 0x94
+        STA_ZERO_PAGE_X :: 0x95
+        STX_ZERO_PAGE_Y :: 0x96
+        TYA             :: 0x98
+        STA_ABSOLUTE_Y  :: 0x99
+        TXS             :: 0x9A
+        STA_ABSOLUTE_X  :: 0x9D
+        
+        LDY_IMMEDIATE   :: 0xA0
+        LDA_X_INDIRECT  :: 0xA1
+        LDX_IMMEDIATE   :: 0xA2
+        LDY_ZERO_PAGE   :: 0xA4
+        LDA_ZERO_PAGE   :: 0xA5
+        LDX_ZERO_PAGE   :: 0xA6
+        TAY             :: 0xA8
+        LDA_IMMEDIATE   :: 0xA9
+        TAX             :: 0xAA
+        LDY_ABSOLUTE    :: 0xAC
+        LDA_ABSOLUTE    :: 0xAD
+        LDX_ABSOLUTE    :: 0xAE
+        BCS             :: 0xB0
+        LDA_INDIRECT_Y  :: 0xB1
+        LDY_ZERO_PAGE_X :: 0xB4
+        LDA_ZERO_PAGE_X :: 0xB5
+        LDX_ZERO_PAGE_Y :: 0xB6
+        CLV             :: 0xB8
+        LDA_ABSOLUTE_Y  :: 0xB9
+        TSX             :: 0xBA
+        LDY_ABSOLUTE_X  :: 0xBC
+        LDA_ABSOLUTE_X  :: 0xBD
+        LDX_ABSOLUTE_Y  :: 0xBE
+        
+        CPY_IMMEDIATE   :: 0xC0
+        CMP_X_INDIRECT  :: 0xC1
+        CPY_ZERO_PAGE   :: 0xC4
+        CMP_ZERO_PAGE   :: 0xC5
+        DEC_ZERO_PAGE   :: 0xC6
+        INY             :: 0xC8
+        CMP_IMMEDIATE   :: 0xC9
+        DEX             :: 0xCA
+        CPY_ABSOLUTE    :: 0xCC
+        CMP_ABSOLUTE    :: 0xCD
+        DEC_ABSOLUTE    :: 0xCE
+        BNE             :: 0xD0
+        CMP_INDIRECT_Y  :: 0xD1
+        CMP_ZERO_PAGE_X :: 0xD5
+        DEC_ZERO_PAGE_X :: 0xD6
+        CLD             :: 0xD8
+        CMP_ABSOLUTE_Y  :: 0xD9
+        CMP_ABSOLUTE_X  :: 0xDD
+        DEC_ABSOLUTE_X  :: 0xDE
+        
+        CPX_IMMEDIATE   :: 0xE0
+        SBC_X_INDIRECT  :: 0xE1
+        CPX_ZERO_PAGE   :: 0xE4
+        SBC_ZERO_PAGE   :: 0xE5
+        INC_ZERO_PAGE   :: 0xE6
+        CPX_ABSOLUTE    :: 0xEC
+        INX             :: 0xE8
+        SBC_IMMEDIATE   :: 0xE9
+        NOP             :: 0xEA
+        SBC_ABSOLUTE    :: 0xED
+        INC_ABSOLUTE    :: 0xEE
+        BEQ             :: 0xF0
+        SBC_INDIRECT_Y  :: 0xF1
+        SBC_ZERO_PAGE_X :: 0xF5
+        INC_ZERO_PAGE_X :: 0xF6
+        SED             :: 0xF8
+        SBC_ABSOLUTE_Y  :: 0xF9
+        SBC_ABSOLUTE_X  :: 0xFD
+        INC_ABSOLUTE_X  :: 0xFE
+    }
+    interrupted: bool
+    do_nmi:      bool
+    prev_nmi:    bool
+    
+    status: enum_flags u8 {
+        CARRY       :: 0x01
+        ZERO        :: 0x02
+        IRQ_DISABLE :: 0x04
+        DECIMAL     :: 0x08
+        BREAK       :: 0x10
+        IGNORED     :: 0x20
+        OVERFLOW    :: 0x40
+        NEGATIVE    :: 0x80
+    }
+    
+    state: enum {
+        T0
+        T1
+        T2
+        T3
+        T4
+        T5
+        T6
+    }
+}
+
+
+unhandled :: (cpu: Cpu_6502) {
+    print_state(cpu)
+    
+    print("\nUnhandled instruction ")
+    
+    value := cast(u8) cpu.instruction
+    
+    digit := (value >> 4) & 0xF
+    print(hex_digits[digit..digit + 1])
+    
+    digit = (value >> 0) & 0xF
+    print(hex_digits[digit..digit + 1])
+    exit(1)
+}
+
+set_zn_flags :: (using cpu: *Cpu_6502, val: u8) {
+    status &= ~.ZERO
+    status &= ~.NEGATIVE
+    
+    if val == 0
+        status |= .ZERO
+    else if val & 0x80
+        status |= .NEGATIVE
+}
+
+set_carry :: (using cpu: *Cpu_6502, carry: bool) {
+    status &= ~.CARRY
+    
+    if carry {
+        status |= .CARRY
+    }
+}
+
+add :: (using cpu: *Cpu_6502, b: u8) {
+    if status & .DECIMAL {
+        low := (a & 0xF) + (b & 0xF)
+        
+        if status & .CARRY
+            low += 1
+            
+        high := cast(u16) (a & 0xF0) + (b & 0xF0)
+        
+        status &= ~.OVERFLOW
+        status &= ~.CARRY
+        status &= ~.ZERO
+        status &= ~.NEGATIVE
+                    
+        
+        if !((low + high) & 0xFF)
+            status |= .ZERO
+        
+        if low > 0x9 {
+            high += 0x10
+            low += 0x6
+        }
+        
+        if high & 0x80
+            status |= .NEGATIVE
+        
+        if ~(a ^ b) & (a ^ high) & 0x80
+            status |= .OVERFLOW
+        
+        if high > 0x90
+            high += 0x60
+        
+        if high >= 0x100
+            status |= .CARRY
+        
+        a = (low & 0xF) + cast() (high & 0xF0)
+    } else {
+        result := cast(u16) a + b
+        
+        if status & .CARRY
+            result += 1
+        
+        set_zn_flags(cpu, cast() result)
+        set_carry(cpu, result >= 0x100)
+        
+        status &= ~.OVERFLOW
+        
+        if ~(a ^ b) & (a ^ result) & 0x80
+            status |= .OVERFLOW
+        
+        a = cast() result
+    }
+    
+}
+
+sub :: (using cpu: *Cpu_6502, b: u8) {
+    result := cast(u16) a - b
+        
+    carry := !(status & .CARRY)
+    if carry
+        result -= 1
+    
+    set_zn_flags(cpu, cast() result)
+    set_carry(cpu, !(result >> 8))
+    status &= ~.OVERFLOW
+    if (a ^ b) & (a ^ result) & 0x80
+        status |= .OVERFLOW
+
+    if status & .DECIMAL {
+        low := (a & 0xF) - (b & 0xF)
+        
+        if carry
+            low -= 1
+            
+        high := cast(u16) (a & 0xF0) - (b & 0xF0)
+        
+        if low & 0x10 {
+            low -= 6
+            high -= 1
+        }
+        
+        if high & 0x100
+            high -= 0x60
+        
+        a = (low & 0xF) + cast() (high & 0xF0)
+    } else {
+        a = cast() result
+    }
+    
+}
+
+cmp :: (using cpu: *Cpu_6502, left: u8, right: u8) {
+    set_zn_flags(cpu, left - right)
+    set_carry(cpu, left >= right)
+}
+
+bit :: (using cpu: *Cpu_6502, value: u8) {
+    status &= ~.OVERFLOW
+    status &= ~.NEGATIVE
+    status &= ~.ZERO
+    
+    if !(value & a) {
+        status |= .ZERO
+    }
+    
+    if value & 0x80 {
+        status |= .NEGATIVE
+    }
+    
+    if value & 0x40 {
+        status |= .OVERFLOW
+    }
+}
+
+asl :: (using cpu: *Cpu_6502, value: u8) -> u8 {
+    result := value << 1
+    set_zn_flags(cpu, result)
+    set_carry(cpu, cast() (value & 0x80))
+    return result
+}
+
+rol :: (using cpu: *Cpu_6502, value: u8) -> u8 {
+    result := value << 1
+    if status & .CARRY
+        result |= 1
+    set_zn_flags(cpu, result)
+    set_carry(cpu, cast() (value & 0x80))
+    return result
+}
+
+ror :: (using cpu: *Cpu_6502, value: u8) -> u8 {
+    result := value >> 1
+    if status & .CARRY
+        result |= 0x80
+    set_zn_flags(cpu, result)
+    set_carry(cpu, cast() (value & 0x01))
+    return result
+}
+
+lsr :: (using cpu: *Cpu_6502, value: u8) -> u8 {
+    result := value >> 1
+    set_zn_flags(cpu, result)
+    set_carry(cpu, cast() (value & 0x01))
+    return result
+}
+
+dec :: (using cpu: *Cpu_6502, value: u8) -> u8 {
+    result := value - 1
+    set_zn_flags(cpu, result)
+    return result
+}
+
+inc :: (using cpu: *Cpu_6502, value: u8) -> u8 {
+    result := value + 1
+    set_zn_flags(cpu, result)
+    return result
+}
+
+add_low :: (base: u16, offset: u8) -> u16 {
+    return (base & 0xFF00) | ((base + offset) & 0xFF)
+}
+
+step_processor :: (using cpu: *Cpu_6502, irq := false, reset := false) {
+    if reset {
+        state = .T0
+    }
+    
+    stack_address := cast(u16) sp + 0x100
+    
+    if state == #complete {
+        case .T0
+            should_irq := irq && !(status & .IRQ_DISABLE)
+            
+            interrupted = reset | should_irq | do_nmi
+        
+            address = IRQ_VECTOR
+            
+            instruction = cast() bus_read(pc)
+            if interrupted {
+                instruction = .BRK
+                
+                if reset {
+                    address = RESET_VECTOR
+                } else if do_nmi {
+                    address = NMI_VECTOR
+                }
+                
+                do_nmi = false
+            } else {
+                pc += 1
+            }
+            
+            
+            state = .T1
+        case .T1
+            state = .T2
+            bus := bus_read(pc)
+            
+            if instruction == #complete {
+                case .BRK
+                    if !interrupted
+                        pc += 1
+                case .NOP
+                    state = .T0
+                case .ASL_A
+                    a = asl(cpu, a)
+                    state = .T0
+                case .ROL_A
+                    a = rol(cpu, a)
+                    state = .T0
+                case .ROR_A
+                    a = ror(cpu, a)
+                    state = .T0
+                case .LSR_A
+                    a = lsr(cpu, a)
+                    state = .T0
+                case .JSR
+                    address = bus
+                    pc += 1
+                case .TXA
+                    a = x
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .TXS
+                    sp = x
+                    state = .T0
+                case .TYA
+                    a = y
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .TSX
+                    x = sp
+                    set_zn_flags(cpu, x)
+                    state = .T0
+                case .TAX
+                    x = a
+                    set_zn_flags(cpu, x)
+                    state = .T0
+                case .TAY
+                    y = a
+                    set_zn_flags(cpu, y)
+                    state = .T0
+                case .CLC
+                    status &= ~.CARRY
+                    state = .T0
+                case .CLD
+                    status &= ~.DECIMAL
+                    state = .T0
+                case .CLI
+                    status &= ~.IRQ_DISABLE
+                    state = .T0
+                case .CLV
+                    status &= ~.OVERFLOW
+                    state = .T0
+                case .SEC
+                    status |= .CARRY
+                    state = .T0
+                case .SED
+                    status |= .DECIMAL
+                    state = .T0
+                case .SEI
+                    status |= .IRQ_DISABLE
+                    state = .T0
+                case .LDX_IMMEDIATE
+                    x = bus
+                    pc += 1
+                    set_zn_flags(cpu, x)
+                    state = .T0
+                case .LDY_IMMEDIATE
+                    y = bus
+                    pc += 1
+                    set_zn_flags(cpu, y)
+                    state = .T0
+                case .LDA_ABSOLUTE    #through
+                case .ORA_ABSOLUTE    #through
+                case .AND_ABSOLUTE    #through
+                case .EOR_ABSOLUTE    #through
+                case .CMP_ABSOLUTE    #through
+                case .ADC_ABSOLUTE    #through
+                case .SBC_ABSOLUTE    #through
+                case .LDA_ABSOLUTE_X  #through
+                case .ORA_ABSOLUTE_X  #through
+                case .AND_ABSOLUTE_X  #through
+                case .EOR_ABSOLUTE_X  #through
+                case .CMP_ABSOLUTE_X  #through
+                case .ADC_ABSOLUTE_X  #through
+                case .SBC_ABSOLUTE_X  #through
+                case .LDA_ABSOLUTE_Y  #through
+                case .ORA_ABSOLUTE_Y  #through
+                case .AND_ABSOLUTE_Y  #through
+                case .EOR_ABSOLUTE_Y  #through
+                case .CMP_ABSOLUTE_Y  #through
+                case .ADC_ABSOLUTE_Y  #through
+                case .SBC_ABSOLUTE_Y  #through
+                case .LDA_ZERO_PAGE   #through
+                case .ORA_ZERO_PAGE   #through
+                case .AND_ZERO_PAGE   #through
+                case .EOR_ZERO_PAGE   #through
+                case .CMP_ZERO_PAGE   #through
+                case .ADC_ZERO_PAGE   #through
+                case .SBC_ZERO_PAGE   #through
+                case .LDA_ZERO_PAGE_X #through
+                case .ORA_ZERO_PAGE_X #through
+                case .AND_ZERO_PAGE_X #through
+                case .EOR_ZERO_PAGE_X #through
+                case .CMP_ZERO_PAGE_X #through
+                case .ADC_ZERO_PAGE_X #through
+                case .SBC_ZERO_PAGE_X #through
+                case .LDX_ABSOLUTE    #through
+                case .LDX_ABSOLUTE_Y  #through
+                case .LDX_ZERO_PAGE   #through
+                case .LDX_ZERO_PAGE_Y #through
+                case .LDY_ABSOLUTE    #through
+                case .LDY_ABSOLUTE_X  #through
+                case .LDY_ZERO_PAGE   #through
+                case .LDY_ZERO_PAGE_X #through
+                case .STA_ABSOLUTE    #through
+                case .STA_ABSOLUTE_X  #through
+                case .STA_ABSOLUTE_Y  #through
+                case .STA_ZERO_PAGE   #through
+                case .STA_ZERO_PAGE_X #through
+                case .STX_ABSOLUTE    #through
+                case .STX_ZERO_PAGE   #through
+                case .STX_ZERO_PAGE_Y #through
+                case .STY_ABSOLUTE    #through
+                case .STY_ZERO_PAGE   #through
+                case .STY_ZERO_PAGE_X #through
+                case .CPX_ABSOLUTE    #through
+                case .CPX_ZERO_PAGE   #through
+                case .CPY_ABSOLUTE    #through
+                case .CPY_ZERO_PAGE   #through
+                case .BIT_ABSOLUTE    #through
+                case .BIT_ZERO_PAGE   #through
+                case .ASL_ZERO_PAGE   #through
+                case .ROL_ZERO_PAGE   #through
+                case .ROR_ZERO_PAGE   #through
+                case .LSR_ZERO_PAGE   #through
+                case .DEC_ZERO_PAGE   #through
+                case .INC_ZERO_PAGE   #through
+                case .ASL_ABSOLUTE    #through
+                case .ROL_ABSOLUTE    #through
+                case .ROR_ABSOLUTE    #through
+                case .LSR_ABSOLUTE    #through
+                case .DEC_ABSOLUTE    #through
+                case .INC_ABSOLUTE    #through
+                case .ASL_ZERO_PAGE_X #through
+                case .ROL_ZERO_PAGE_X #through
+                case .ROR_ZERO_PAGE_X #through
+                case .LSR_ZERO_PAGE_X #through
+                case .DEC_ZERO_PAGE_X #through
+                case .INC_ZERO_PAGE_X #through
+                case .ASL_ABSOLUTE_X  #through
+                case .ROL_ABSOLUTE_X  #through
+                case .ROR_ABSOLUTE_X  #through
+                case .LSR_ABSOLUTE_X  #through
+                case .DEC_ABSOLUTE_X  #through
+                case .INC_ABSOLUTE_X  #through
+                case .JMP_INDIRECT    #through
+                case .JMP_ABSOLUTE
+                    address = bus
+                    pc += 1
+                case .LDA_INDIRECT_Y #through
+                case .ORA_INDIRECT_Y #through
+                case .AND_INDIRECT_Y #through
+                case .EOR_INDIRECT_Y #through
+                case .CMP_INDIRECT_Y #through
+                case .ADC_INDIRECT_Y #through
+                case .SBC_INDIRECT_Y #through
+                case .LDA_X_INDIRECT #through
+                case .ORA_X_INDIRECT #through
+                case .AND_X_INDIRECT #through
+                case .EOR_X_INDIRECT #through
+                case .CMP_X_INDIRECT #through
+                case .ADC_X_INDIRECT #through
+                case .SBC_X_INDIRECT #through
+                case .STA_INDIRECT_Y #through
+                case .STA_X_INDIRECT
+                    index = bus
+                    pc += 1
+                case .INX
+                    x += 1
+                    set_zn_flags(cpu, x)
+                    state = .T0
+                case .BNE
+                    branch_t1(cpu, bus, !(status & .ZERO))
+                case .BCC
+                    branch_t1(cpu, bus, !(status & .CARRY))
+                case .BPL
+                    branch_t1(cpu, bus, !(status & .NEGATIVE))
+                case .BVC
+                    branch_t1(cpu, bus, !(status & .OVERFLOW))
+                case .BEQ
+                    branch_t1(cpu, bus, cast() (status & .ZERO))
+                case .BCS
+                    branch_t1(cpu, bus, cast() (status & .CARRY))
+                case .BMI
+                    branch_t1(cpu, bus, cast() (status & .NEGATIVE))
+                case .BVS
+                    branch_t1(cpu, bus, cast() (status & .OVERFLOW))
+                case .LDA_IMMEDIATE
+                    a = bus
+                    pc += 1
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .ADC_IMMEDIATE
+                    pc += 1
+                    add(cpu, bus)
+                    state = .T0
+                case .CMP_IMMEDIATE
+                    pc += 1
+                    cmp(cpu, a, bus)
+                    state = .T0
+                case .AND_IMMEDIATE
+                    pc += 1
+                    a &= bus
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .EOR_IMMEDIATE
+                    pc += 1
+                    a ^= bus
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .ORA_IMMEDIATE
+                    pc += 1
+                    a |= bus
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .SBC_IMMEDIATE
+                    pc += 1
+                    sub(cpu, bus)
+                    state = .T0
+                case .CPX_IMMEDIATE
+                    pc += 1
+                    cmp(cpu, x, bus)
+                    state = .T0
+                case .CPY_IMMEDIATE
+                    pc += 1
+                    cmp(cpu, y, bus)
+                    state = .T0
+                case .DEX
+                    x -= 1
+                    set_zn_flags(cpu, x)
+                    state = .T0
+                case .DEY
+                    y -= 1
+                    set_zn_flags(cpu, y)
+                    state = .T0
+                case .INY
+                    y += 1
+                    set_zn_flags(cpu, y)
+                    state = .T0
+                case .PHP #through
+                case .RTS #through
+                case .RTI #through
+                case .PLA #through
+                case .PLP #through
+                case .PHA
+                    // Do nothing
+                else
+                    unhandled(<<cpu)
+            }
+        
+        case .T2
+            state = .T3
+            
+            if instruction == {
+                case .BRK
+                    if address == RESET_VECTOR {
+                        bus_read(stack_address)
+                    } else {
+                        bus_write(stack_address, hi(pc))
+                    }
+                    sp -= 1
+                case .PHP
+                    bus_write(stack_address, cast() (status | .IGNORED | .BREAK))
+                    sp -= 1
+                    state = .T0
+                case .JSR
+                    bus_read(stack_address)
+                case .PHA
+                    bus_write(stack_address, a)
+                    sp -= 1
+                    state = .T0
+                case .PLA #through                
+                case .PLP #through                
+                case .RTI #through                
+                case .RTS
+                    bus_read(stack_address)
+                    sp += 1
+                case .BCC #through
+                case .BEQ #through
+                case .BPL #through
+                case .BCS #through
+                case .BMI #through
+                case .BVC #through
+                case .BVS #through
+                case .BNE
+                    bus_read(pc)
+                    target := add_low(pc, cast() address)
+                    
+                    if target == pc + address {
+                        state = .T0
+                        pc = target
+                    } else
+                        state = .T3
+                case .LDX_ZERO_PAGE_Y #through
+                case .STX_ZERO_PAGE_Y
+                    bus_read(address)
+                    address = (address + y) & 0xFF
+                case .LDA_ZERO_PAGE_X #through
+                case .ORA_ZERO_PAGE_X #through
+                case .AND_ZERO_PAGE_X #through
+                case .EOR_ZERO_PAGE_X #through
+                case .CMP_ZERO_PAGE_X #through
+                case .ADC_ZERO_PAGE_X #through
+                case .SBC_ZERO_PAGE_X #through
+                case .LDY_ZERO_PAGE_X #through
+                case .STA_ZERO_PAGE_X #through
+                case .STY_ZERO_PAGE_X #through
+                case .ASL_ZERO_PAGE_X #through
+                case .ROL_ZERO_PAGE_X #through
+                case .ROR_ZERO_PAGE_X #through
+                case .LSR_ZERO_PAGE_X #through
+                case .DEC_ZERO_PAGE_X #through
+                case .INC_ZERO_PAGE_X
+                    bus_read(address)
+                    address = (address + x) & 0xFF
+                case .LDA_ABSOLUTE   #through
+                case .ORA_ABSOLUTE   #through
+                case .AND_ABSOLUTE   #through
+                case .EOR_ABSOLUTE   #through
+                case .CMP_ABSOLUTE   #through
+                case .ADC_ABSOLUTE   #through
+                case .SBC_ABSOLUTE   #through
+                case .LDA_ABSOLUTE_X #through
+                case .ORA_ABSOLUTE_X #through
+                case .AND_ABSOLUTE_X #through
+                case .EOR_ABSOLUTE_X #through
+                case .CMP_ABSOLUTE_X #through
+                case .ADC_ABSOLUTE_X #through
+                case .SBC_ABSOLUTE_X #through
+                case .LDA_ABSOLUTE_Y #through
+                case .ORA_ABSOLUTE_Y #through
+                case .AND_ABSOLUTE_Y #through
+                case .EOR_ABSOLUTE_Y #through
+                case .CMP_ABSOLUTE_Y #through
+                case .ADC_ABSOLUTE_Y #through
+                case .SBC_ABSOLUTE_Y #through
+                case .LDX_ABSOLUTE   #through
+                case .LDX_ABSOLUTE_Y #through
+                case .LDY_ABSOLUTE   #through
+                case .LDY_ABSOLUTE_X #through
+                case .STA_ABSOLUTE   #through
+                case .STA_ABSOLUTE_X #through
+                case .STA_ABSOLUTE_Y #through
+                case .STX_ABSOLUTE   #through
+                case .STY_ABSOLUTE   #through
+                case .CPX_ABSOLUTE   #through
+                case .CPY_ABSOLUTE   #through
+                case .BIT_ABSOLUTE   #through
+                case .ASL_ABSOLUTE   #through
+                case .ROL_ABSOLUTE   #through
+                case .ROR_ABSOLUTE   #through
+                case .LSR_ABSOLUTE   #through
+                case .DEC_ABSOLUTE   #through
+                case .INC_ABSOLUTE   #through
+                case .ASL_ABSOLUTE_X #through
+                case .ROL_ABSOLUTE_X #through
+                case .ROR_ABSOLUTE_X #through
+                case .LSR_ABSOLUTE_X #through
+                case .DEC_ABSOLUTE_X #through
+                case .INC_ABSOLUTE_X #through
+                case .JMP_INDIRECT
+                    address |= set_hi(bus_read(pc))
+                    pc += 1
+                case .LDA_ZERO_PAGE
+                    a = bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .ORA_ZERO_PAGE
+                    a |= bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .AND_ZERO_PAGE
+                    a &= bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .EOR_ZERO_PAGE
+                    a ^= bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .CMP_ZERO_PAGE
+                    cmp(cpu, a, bus_read(address))
+                    state = .T0
+                case .ADC_ZERO_PAGE
+                    add(cpu, bus_read(address))
+                    state = .T0
+                case .SBC_ZERO_PAGE
+                    sub(cpu, bus_read(address))
+                    state = .T0
+                case .LDA_INDIRECT_Y #through
+                case .ORA_INDIRECT_Y #through
+                case .AND_INDIRECT_Y #through
+                case .EOR_INDIRECT_Y #through
+                case .CMP_INDIRECT_Y #through
+                case .ADC_INDIRECT_Y #through
+                case .SBC_INDIRECT_Y #through
+                case .STA_INDIRECT_Y
+                    address = bus_read(index)
+                case .LDA_X_INDIRECT #through
+                case .ORA_X_INDIRECT #through
+                case .AND_X_INDIRECT #through
+                case .EOR_X_INDIRECT #through
+                case .CMP_X_INDIRECT #through
+                case .ADC_X_INDIRECT #through
+                case .SBC_X_INDIRECT #through
+                case .STA_X_INDIRECT
+                    bus_read(index)
+                case .LDX_ZERO_PAGE
+                    x = bus_read(address)
+                    set_zn_flags(cpu, x)
+                    state = .T0
+                case .LDY_ZERO_PAGE
+                    y = bus_read(address)
+                    set_zn_flags(cpu, y)
+                    state = .T0
+                case .STA_ZERO_PAGE
+                    bus_write(address, a)
+                    state = .T0
+                case .STX_ZERO_PAGE
+                    bus_write(address, x)
+                    state = .T0
+                case .STY_ZERO_PAGE
+                    bus_write(address, y)
+                    state = .T0
+                case .CPX_ZERO_PAGE
+                    cmp(cpu, x, bus_read(address))
+                    state = .T0
+                case .CPY_ZERO_PAGE
+                    cmp(cpu, y, bus_read(address))
+                    state = .T0
+                case .BIT_ZERO_PAGE
+                    bit(cpu, bus_read(address))
+                    state = .T0
+                case .ASL_ZERO_PAGE   #through
+                case .ROL_ZERO_PAGE   #through
+                case .ROR_ZERO_PAGE   #through
+                case .LSR_ZERO_PAGE   #through
+                case .DEC_ZERO_PAGE   #through
+                case .INC_ZERO_PAGE
+                    index = bus_read(address)
+                case .JMP_ABSOLUTE
+                    pc = set_hi(bus_read(pc)) | address
+                    state = .T0
+                else
+                    unhandled(<<cpu)
+            }
+        case .T3
+            state = .T4
+            
+            absolute_x := add_low(address, x)
+            absolute_y := add_low(address, y)
+            
+            if instruction == {
+                case .BRK
+                    if address == RESET_VECTOR {
+                        bus_read(stack_address)
+                    } else {
+                        bus_write(stack_address, lo(pc))
+                    }
+                    sp -= 1
+                    state = .T4
+                case .ASL_ZERO_PAGE   #through
+                case .ROL_ZERO_PAGE   #through
+                case .ROR_ZERO_PAGE   #through
+                case .DEC_ZERO_PAGE   #through
+                case .INC_ZERO_PAGE   #through
+                case .LSR_ZERO_PAGE
+                    bus_write(address, index)
+                case .JSR
+                    bus_write(stack_address, hi(pc))
+                    sp -= 1
+                case .LDA_ABSOLUTE #through
+                case .LDA_ZERO_PAGE_X
+                    a = bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .ORA_ABSOLUTE #through
+                case .ORA_ZERO_PAGE_X
+                    a |= bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .AND_ABSOLUTE #through
+                case .AND_ZERO_PAGE_X
+                    a &= bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .EOR_ABSOLUTE #through
+                case .EOR_ZERO_PAGE_X
+                    a ^= bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .CMP_ABSOLUTE #through
+                case .CMP_ZERO_PAGE_X
+                    cmp(cpu, a, bus_read(address))
+                    state = .T0
+                case .ADC_ABSOLUTE #through
+                case .ADC_ZERO_PAGE_X
+                    add(cpu, bus_read(address))
+                    state = .T0
+                case .SBC_ABSOLUTE #through
+                case .SBC_ZERO_PAGE_X
+                    sub(cpu, bus_read(address))
+                    state = .T0
+                case .LDA_ABSOLUTE_X
+                    value := bus_read(absolute_x)
+                    if absolute_x == address + x {
+                        a = value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .ORA_ABSOLUTE_X
+                    value := bus_read(absolute_x)
+                    if absolute_x == address + x {
+                        a |= value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .AND_ABSOLUTE_X
+                    value := bus_read(absolute_x)
+                    if absolute_x == address + x {
+                        a &= value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .EOR_ABSOLUTE_X
+                    value := bus_read(absolute_x)
+                    if absolute_x == address + x {
+                        a ^= value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .CMP_ABSOLUTE_X
+                    value := bus_read(absolute_x)
+                    if absolute_x == address + x {
+                        cmp(cpu, a, value)
+                        state = .T0
+                    }
+                case .ADC_ABSOLUTE_X
+                    value := bus_read(absolute_x)
+                    if absolute_x == address + x {
+                        add(cpu, value)
+                        state = .T0
+                    }
+                case .SBC_ABSOLUTE_X
+                    value := bus_read(absolute_x)
+                    if absolute_x == address + x {
+                        sub(cpu, value)
+                        state = .T0
+                    }
+                case .LDA_ABSOLUTE_Y
+                    value := bus_read(absolute_y)
+                    if absolute_y == address + y {
+                        a = value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .ORA_ABSOLUTE_Y
+                    value := bus_read(absolute_y)
+                    if absolute_y == address + y {
+                        a |= value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .AND_ABSOLUTE_Y
+                    value := bus_read(absolute_y)
+                    if absolute_y == address + y {
+                        a &= value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .EOR_ABSOLUTE_Y
+                    value := bus_read(absolute_y)
+                    if absolute_y == address + y {
+                        a ^= value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .CMP_ABSOLUTE_Y
+                    value := bus_read(absolute_y)
+                    if absolute_y == address + y {
+                        cmp(cpu, a, value)
+                        state = .T0
+                    }
+                case .ADC_ABSOLUTE_Y
+                    value := bus_read(absolute_y)
+                    if absolute_y == address + y {
+                        add(cpu, value)
+                        state = .T0
+                    }
+                case .SBC_ABSOLUTE_Y
+                    value := bus_read(absolute_y)
+                    if absolute_y == address + y {
+                        sub(cpu, value)
+                        state = .T0
+                    }
+                case .LDA_INDIRECT_Y #through
+                case .ORA_INDIRECT_Y #through
+                case .AND_INDIRECT_Y #through
+                case .EOR_INDIRECT_Y #through
+                case .CMP_INDIRECT_Y #through
+                case .ADC_INDIRECT_Y #through
+                case .SBC_INDIRECT_Y #through
+                case .STA_INDIRECT_Y
+                    address |= set_hi(bus_read(index + 1))
+                case .LDA_X_INDIRECT #through
+                case .ORA_X_INDIRECT #through
+                case .AND_X_INDIRECT #through
+                case .EOR_X_INDIRECT #through
+                case .CMP_X_INDIRECT #through
+                case .ADC_X_INDIRECT #through
+                case .SBC_X_INDIRECT #through
+                case .STA_X_INDIRECT
+                    address = bus_read(index + x)
+                case .ASL_ABSOLUTE    #through
+                case .ROL_ABSOLUTE    #through
+                case .ROR_ABSOLUTE    #through
+                case .LSR_ABSOLUTE    #through
+                case .DEC_ABSOLUTE    #through
+                case .INC_ABSOLUTE    #through
+                case .ASL_ZERO_PAGE_X #through
+                case .ROL_ZERO_PAGE_X #through
+                case .ROR_ZERO_PAGE_X #through
+                case .DEC_ZERO_PAGE_X #through
+                case .INC_ZERO_PAGE_X #through
+                case .LSR_ZERO_PAGE_X
+                    index = bus_read(address)
+                case .LDX_ABSOLUTE #through
+                case .LDX_ZERO_PAGE_Y
+                    x = bus_read(address)
+                    set_zn_flags(cpu, x)
+                    state = .T0
+                case .LDX_ABSOLUTE_Y
+                    value := bus_read(absolute_y)
+                    if absolute_y == address + y {
+                        x = value
+                        set_zn_flags(cpu, x)
+                        state = .T0
+                    }
+                case .LDY_ABSOLUTE #through
+                case .LDY_ZERO_PAGE_X
+                    y = bus_read(address)
+                    set_zn_flags(cpu, y)
+                    state = .T0
+                case .LDY_ABSOLUTE_X
+                    value := bus_read(absolute_x)
+                    if absolute_x == address + x {
+                        y = value
+                        set_zn_flags(cpu, y)
+                        state = .T0
+                    }
+                case .STA_ABSOLUTE #through
+                case .STA_ZERO_PAGE_X
+                    bus_write(address, a)
+                    state = .T0
+                case .STA_ABSOLUTE_X #through
+                case .ASL_ABSOLUTE_X #through
+                case .ROL_ABSOLUTE_X #through
+                case .ROR_ABSOLUTE_X #through
+                case .DEC_ABSOLUTE_X #through
+                case .INC_ABSOLUTE_X #through
+                case .LSR_ABSOLUTE_X
+                    bus_read(add_low(address, x))
+                case .STA_ABSOLUTE_Y
+                    bus_read(add_low(address, y))
+                case .STX_ABSOLUTE #through
+                case .STX_ZERO_PAGE_Y
+                    bus_write(address, x)
+                    state = .T0
+                case .STY_ABSOLUTE #through
+                case .STY_ZERO_PAGE_X
+                    bus_write(address, y)
+                    state = .T0
+                case .CPX_ABSOLUTE
+                    cmp(cpu, x, bus_read(address))
+                    state = .T0
+                case .CPY_ABSOLUTE
+                    cmp(cpu, y, bus_read(address))
+                    state = .T0
+                case .BIT_ABSOLUTE
+                    bit(cpu, bus_read(address))
+                    state = .T0
+                case .BCC #through
+                case .BEQ #through
+                case .BPL #through
+                case .BCS #through
+                case .BMI #through
+                case .BVC #through
+                case .BVS #through
+                case .BNE
+                    bus_read(add_low(pc, cast() address))
+                    pc += address
+                    state = .T0
+                case .RTS
+                    pc = bus_read(stack_address)
+                    sp += 1
+                case .PLA
+                    a = bus_read(stack_address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .PLP
+                    status = cast() bus_read(stack_address)
+                    status &= ~.IGNORED
+                    status &= ~.BREAK
+                    state = .T0
+                case .RTI
+                    status = cast() bus_read(stack_address)
+                    status &= ~.IGNORED
+                    status &= ~.BREAK
+                    sp += 1
+                case .JMP_INDIRECT
+                    pc = bus_read(address)
+                else
+                    unhandled(<<cpu)
+            }
+        case .T4
+            state = .T5
+            
+            indirect_y := add_low(address, y)
+        
+            if instruction == {
+                case .BRK
+                    if address == RESET_VECTOR {
+                        bus_read(stack_address)
+                    } else {
+                        write_status := status
+                        if !interrupted {
+                            write_status |= .BREAK
+                        }
+                        
+                        // IGNORED flag has no actual connection in hardware so will always appear to be 1
+                        bus_write(stack_address, cast() (write_status | .IGNORED))
+                    }
+                    sp -= 1
+                    status |= .IRQ_DISABLE
+                case .ASL_ZERO_PAGE
+                    bus_write(address, asl(cpu, index))
+                    state = .T0
+                case .ROL_ZERO_PAGE
+                    bus_write(address, rol(cpu, index))
+                    state = .T0
+                case .ROR_ZERO_PAGE
+                    bus_write(address, ror(cpu, index))
+                    state = .T0
+                case .LSR_ZERO_PAGE
+                    bus_write(address, lsr(cpu, index))
+                    state = .T0
+                case .DEC_ZERO_PAGE
+                    bus_write(address, dec(cpu, index))
+                    state = .T0
+                case .INC_ZERO_PAGE
+                    bus_write(address, inc(cpu, index))
+                    state = .T0
+                case .ASL_ABSOLUTE    #through
+                case .ROL_ABSOLUTE    #through
+                case .ROR_ABSOLUTE    #through
+                case .LSR_ABSOLUTE    #through
+                case .DEC_ABSOLUTE    #through
+                case .INC_ABSOLUTE    #through
+                case .ASL_ZERO_PAGE_X #through
+                case .ROL_ZERO_PAGE_X #through
+                case .ROR_ZERO_PAGE_X #through
+                case .DEC_ZERO_PAGE_X #through
+                case .INC_ZERO_PAGE_X #through
+                case .LSR_ZERO_PAGE_X
+                    bus_write(address, index)
+                case .JSR
+                    bus_write(stack_address, lo(pc))
+                    sp -= 1
+                case .RTS
+                    pc |= set_hi(bus_read(stack_address))
+                case .LDA_ABSOLUTE_X
+                    a = bus_read(address + x)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .ORA_ABSOLUTE_X
+                    a |= bus_read(address + x)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .AND_ABSOLUTE_X
+                    a &= bus_read(address + x)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .EOR_ABSOLUTE_X
+                    a ^= bus_read(address + x)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .CMP_ABSOLUTE_X
+                    cmp(cpu, a, bus_read(address + x))
+                    state = .T0
+                case .ADC_ABSOLUTE_X
+                    add(cpu, bus_read(address + x))
+                    state = .T0
+                case .SBC_ABSOLUTE_X
+                    sub(cpu, bus_read(address + x))
+                    state = .T0
+                case .LDA_ABSOLUTE_Y
+                    a = bus_read(address + y)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .ORA_ABSOLUTE_Y
+                    a |= bus_read(address + y)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .AND_ABSOLUTE_Y
+                    a &= bus_read(address + y)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .EOR_ABSOLUTE_Y
+                    a ^= bus_read(address + y)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .CMP_ABSOLUTE_Y
+                    cmp(cpu, a, bus_read(address + y))
+                    state = .T0
+                case .ADC_ABSOLUTE_Y
+                    add(cpu, bus_read(address + y))
+                    state = .T0
+                case .SBC_ABSOLUTE_Y
+                    sub(cpu, bus_read(address + y))
+                    state = .T0
+                case .LDA_INDIRECT_Y
+                    value := bus_read(indirect_y)
+                    if indirect_y == address + y {
+                        a = value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .ORA_INDIRECT_Y
+                    value := bus_read(indirect_y)
+                    if indirect_y == address + y {
+                        a |= value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .AND_INDIRECT_Y
+                    value := bus_read(indirect_y)
+                    if indirect_y == address + y {
+                        a &= value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .EOR_INDIRECT_Y
+                    value := bus_read(indirect_y)
+                    if indirect_y == address + y {
+                        a ^= value
+                        set_zn_flags(cpu, a)
+                        state = .T0
+                    }
+                case .CMP_INDIRECT_Y
+                    value := bus_read(indirect_y)
+                    if indirect_y == address + y {
+                        cmp(cpu, a, value)
+                        state = .T0
+                    }
+                case .ADC_INDIRECT_Y
+                    value := bus_read(indirect_y)
+                    if indirect_y == address + y {
+                        add(cpu, value)
+                        state = .T0
+                    }
+                case .SBC_INDIRECT_Y
+                    value := bus_read(indirect_y)
+                    if indirect_y == address + y {
+                        add(cpu, value)
+                        state = .T0
+                    }
+                case .LDA_X_INDIRECT #through
+                case .ORA_X_INDIRECT #through
+                case .AND_X_INDIRECT #through
+                case .EOR_X_INDIRECT #through
+                case .CMP_X_INDIRECT #through
+                case .ADC_X_INDIRECT #through
+                case .SBC_X_INDIRECT #through
+                case .STA_X_INDIRECT
+                    address |= set_hi(bus_read(index + x + 1))
+                case .LDX_ABSOLUTE_Y
+                    x = bus_read(address + y)
+                    set_zn_flags(cpu, x)
+                    state = .T0
+                case .LDY_ABSOLUTE_X
+                    y = bus_read(address + x)
+                    set_zn_flags(cpu, y)
+                    state = .T0
+                case .STA_INDIRECT_Y
+                    bus_read(indirect_y)
+                case .ASL_ABSOLUTE_X  #through
+                case .ROL_ABSOLUTE_X  #through
+                case .ROR_ABSOLUTE_X  #through
+                case .DEC_ABSOLUTE_X  #through
+                case .INC_ABSOLUTE_X  #through
+                case .LSR_ABSOLUTE_X
+                    index = bus_read(address + x)
+                case .STA_ABSOLUTE_X
+                    bus_write(address + x, a)
+                    state = .T0
+                case .STA_ABSOLUTE_Y
+                    bus_write(address + y, a)
+                    state = .T0
+                case .JMP_INDIRECT
+                    pc |= set_hi(bus_read(add_low(address, 1)))
+                    state = .T0
+                case .RTI
+                    pc = bus_read(stack_address)
+                    sp += 1
+                else
+                    unhandled(<<cpu)
+                    
+            }
+        case .T5
+            state = .T6
+        
+            if instruction == {
+                case .BRK
+                    pc = bus_read(address)
+                case .ASL_ABSOLUTE #through
+                case .ASL_ZERO_PAGE_X
+                    bus_write(address, asl(cpu, index))
+                    state = .T0
+                case .ROL_ABSOLUTE #through
+                case .ROL_ZERO_PAGE_X
+                    bus_write(address, rol(cpu, index))
+                    state = .T0
+                case .ROR_ABSOLUTE #through
+                case .ROR_ZERO_PAGE_X
+                    bus_write(address, ror(cpu, index))
+                    state = .T0
+                case .LSR_ABSOLUTE #through
+                case .LSR_ZERO_PAGE_X
+                    bus_write(address, lsr(cpu, index))
+                    state = .T0
+                case .DEC_ABSOLUTE #through
+                case .DEC_ZERO_PAGE_X
+                    bus_write(address, dec(cpu, index))
+                    state = .T0
+                case .INC_ABSOLUTE #through
+                case .INC_ZERO_PAGE_X
+                    bus_write(address, inc(cpu, index))
+                    state = .T0
+                case .ASL_ABSOLUTE_X  #through
+                case .ROL_ABSOLUTE_X  #through
+                case .ROR_ABSOLUTE_X  #through
+                case .DEC_ABSOLUTE_X  #through
+                case .INC_ABSOLUTE_X  #through
+                case .LSR_ABSOLUTE_X
+                    bus_write(address + x, index)
+                case .JSR
+                    pc = set_hi(bus_read(pc)) | address
+                    state = .T0
+                case .RTS
+                    bus_read(pc)
+                    pc += 1
+                    state = .T0
+                case .RTI
+                    pc |= set_hi(bus_read(stack_address))
+                    state = .T0
+                case .LDA_INDIRECT_Y
+                    a = bus_read(address + y)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .ORA_INDIRECT_Y
+                    a |= bus_read(address + y)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .AND_INDIRECT_Y
+                    a &= bus_read(address + y)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .EOR_INDIRECT_Y
+                    a ^= bus_read(address + y)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .CMP_INDIRECT_Y
+                    cmp(cpu, a, bus_read(address + y))
+                    state = .T0
+                case .ADC_INDIRECT_Y
+                    add(cpu, bus_read(address + y))
+                    state = .T0
+                case .SBC_INDIRECT_Y
+                    sub(cpu, bus_read(address + y))
+                    state = .T0
+                case .LDA_X_INDIRECT
+                    a = bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .ORA_X_INDIRECT
+                    a |= bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .AND_X_INDIRECT
+                    a &= bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .EOR_X_INDIRECT
+                    a ^= bus_read(address)
+                    set_zn_flags(cpu, a)
+                    state = .T0
+                case .CMP_X_INDIRECT
+                    cmp(cpu, a, bus_read(address))
+                    state = .T0
+                case .ADC_X_INDIRECT
+                    add(cpu, bus_read(address))
+                    state = .T0
+                case .SBC_X_INDIRECT
+                    sub(cpu, bus_read(address))
+                    state = .T0
+                case .STA_X_INDIRECT
+                    bus_write(address, a)
+                    state = .T0
+                case .STA_INDIRECT_Y
+                    bus_write(address + y, a)
+                    state = .T0
+                else
+                    unhandled(<<cpu)
+            }
+        case .T6
+            state = .T0
+        
+            if instruction == {
+                case .BRK
+                    pc |= set_hi(bus_read(address + 1))
+                case .ASL_ABSOLUTE_X
+                    bus_write(address + x, asl(cpu, index))
+                    state = .T0
+                case .ROL_ABSOLUTE_X
+                    bus_write(address + x, rol(cpu, index))
+                    state = .T0
+                case .ROR_ABSOLUTE_X
+                    bus_write(address + x, ror(cpu, index))
+                    state = .T0
+                case .LSR_ABSOLUTE_X
+                    bus_write(address + x, lsr(cpu, index))
+                    state = .T0
+                case .DEC_ABSOLUTE_X
+                    bus_write(address + x, dec(cpu, index))
+                    state = .T0
+                case .INC_ABSOLUTE_X
+                    bus_write(address + x, inc(cpu, index))
+                    state = .T0
+                else
+                    unhandled(<<cpu)
+            }
+    }
+    
+}
+
+print_state :: (using cpu: Cpu_6502) {
+    error_print("PC: ")
+    print_hex(pc)
+    error_print(" A: ")
+    print_hex(a)
+    error_print(" X: ")
+    print_hex(x)
+    error_print(" Y: ")
+    print_hex(y)
+    error_print(" S: 1")
+    print_hex(sp)
+    error_print(" IR: % ADR: ", instruction)
+    print_hex(address)
+    error_print(" IDX: ")
+    print_hex(index)
+    error_print(" % %\n", status, state)
+}

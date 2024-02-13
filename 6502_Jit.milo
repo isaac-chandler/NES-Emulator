@@ -1,0 +1,377 @@
+#import "Standard"
+#import "Windows"
+
+Jit_6502 :: struct {
+    memory: *u8
+    instruction_addresses: **void
+    enter_jit: (*Jit_6502) -> void #c_call
+    exit_jit_address: *void
+    remaining_cycles: u64
+    
+    pc:    u16
+    sp:    u8
+    x:     u8
+    y:     u8
+    a:     u8
+    flags: u8
+}
+
+allow_jit_execution :: (address: u16) -> bool {
+    return address >= 0x8000
+}
+
+write_value :: (memory: **void, $T: type, value: T) -> *T {
+    address := cast(*T) <<memory;
+    <<address = value;
+    <<memory += size_of(T)
+    return address
+}
+
+write_jump_to_exit :: (using cpu: *Jit_6502, executable_memory: **void) {
+    write_value(executable_memory, u8, 0xE9)
+    patch := write_value(executable_memory, s32, 0);
+    <<patch = cast() (exit_jit_address - <<executable_memory)
+}
+
+write_branch_to_exit :: (using cpu: *Jit_6502, executable_memory: **void, opcode: u8) {
+    write_value(executable_memory, u8, 0x0F)
+    write_value(executable_memory, u8, opcode)
+    patch := write_value(executable_memory, s32, 0);
+    <<patch = cast() (exit_jit_address - <<executable_memory)
+}
+
+jit :: (using cpu: *Jit_6502) {
+    executable_memory := VirtualAlloc(null, 16*1024*1024, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)
+    
+    exit_jit_address = executable_memory
+    
+    write_value(*executable_memory, u8, 0x48) // mov rcx, qword ptr[rsp+96]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x4C)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x60)
+    
+    // remaining_cycles = r9
+    write_value(*executable_memory, u8, 0x4C) // mov qword ptr[rcx+32], r9
+    write_value(*executable_memory, u8, 0x89)
+    write_value(*executable_memory, u8, 0x49)
+    write_value(*executable_memory, s8, 0x20)
+    
+    // pc = rdx
+    write_value(*executable_memory, u8, 0x66) // mov word ptr[rcx+40], dx
+    write_value(*executable_memory, u8, 0x89)
+    write_value(*executable_memory, u8, 0x51)
+    write_value(*executable_memory, s8, 0x28)
+    
+    // sp = rbp 
+    write_value(*executable_memory, u8, 0x40) // mov byte ptr[rcx+42], bpl
+    write_value(*executable_memory, u8, 0x88)
+    write_value(*executable_memory, u8, 0x69)
+    write_value(*executable_memory, s8, 0x2A)
+    
+    // a = rax
+    write_value(*executable_memory, u8, 0x88) // mov byte ptr[rcx+42], al
+    write_value(*executable_memory, u8, 0x41)
+    write_value(*executable_memory, s8, 0x2B)
+    
+    // x = rsi
+    write_value(*executable_memory, u8, 0x40) // mov byte ptr[rcx+44], sil
+    write_value(*executable_memory, u8, 0x88)
+    write_value(*executable_memory, u8, 0x71)
+    write_value(*executable_memory, s8, 0x2C)
+    
+    // y = rdi
+    write_value(*executable_memory, u8, 0x40) // mov byte ptr[rcx+45], dil
+    write_value(*executable_memory, u8, 0x88)
+    write_value(*executable_memory, u8, 0x71)
+    write_value(*executable_memory, s8, 0x2D)
+    
+    write_value(*executable_memory, u8, 0x80) // and byte ptr[rcx+46], 0x3C
+    write_value(*executable_memory, u8, 0x61)
+    write_value(*executable_memory, u8, 0x2E)
+    write_value(*executable_memory, s8, 0x3C)
+    
+    write_value(*executable_memory, u8, 0x45) // test r12d, r12d
+    write_value(*executable_memory, u8, 0x85)
+    write_value(*executable_memory, u8, 0xE4)
+    write_value(*executable_memory, u8, 0x0F) // jz +4
+    write_value(*executable_memory, u8, 0x84)
+    write_value(*executable_memory, s32, 4)
+    write_value(*executable_memory, u8, 0x41) // or r11d, 0x02
+    write_value(*executable_memory, u8, 0x83)
+    write_value(*executable_memory, u8, 0xCB)
+    write_value(*executable_memory, s8, 0x02)
+    
+    write_value(*executable_memory, u8, 0x45) // test r13d, r13d
+    write_value(*executable_memory, u8, 0x85)
+    write_value(*executable_memory, u8, 0xED)
+    write_value(*executable_memory, u8, 0x0F) // jz +4
+    write_value(*executable_memory, u8, 0x84)
+    write_value(*executable_memory, s32, 4)
+    write_value(*executable_memory, u8, 0x41) // or r11d, 0x40
+    write_value(*executable_memory, u8, 0x83)
+    write_value(*executable_memory, u8, 0xCB)
+    write_value(*executable_memory, s8, 0x40)
+    
+    write_value(*executable_memory, u8, 0x45) // test r14d, r14d
+    write_value(*executable_memory, u8, 0x85)
+    write_value(*executable_memory, u8, 0xF6)
+    write_value(*executable_memory, u8, 0x0F) // jz +7
+    write_value(*executable_memory, u8, 0x84)
+    write_value(*executable_memory, s32, 7)
+    write_value(*executable_memory, u8, 0x41) // or r11d, 0x80
+    write_value(*executable_memory, u8, 0x81)
+    write_value(*executable_memory, u8, 0xCB)
+    write_value(*executable_memory, s32, 0x80)
+    
+    write_value(*executable_memory, u8, 0x44) // or byte ptr[rcx+46], r11b
+    write_value(*executable_memory, u8, 0x08)
+    write_value(*executable_memory, u8, 0x59)
+    write_value(*executable_memory, s8, 0x2E)
+    
+    write_value(*executable_memory, u8, 0x48) // mov rbx, qword ptr[rsp]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x1C)
+    write_value(*executable_memory, u8, 0x24)
+    
+    write_value(*executable_memory, u8, 0x48) // mov rbp, qword ptr[rsp+8]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x6C)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x08)
+    
+    write_value(*executable_memory, u8, 0x48) // mov rsi, qword ptr[rsp+16]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x74)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x10)
+    
+    write_value(*executable_memory, u8, 0x48) // mov rdi, qword ptr[rsp+24]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x7C)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x18)
+    
+    write_value(*executable_memory, u8, 0x4C) // mov r12, qword ptr[rsp+32]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x64)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x20)
+    
+    write_value(*executable_memory, u8, 0x4C) // mov r13, qword ptr[rsp+40]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x6C)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x28)
+    
+    write_value(*executable_memory, u8, 0x4C) // mov r14, qword ptr[rsp+48]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x74)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x30)
+    
+    write_value(*executable_memory, u8, 0x4C) // mov r15, qword ptr[rsp+56]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x7C)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x38)
+    
+    write_value(*executable_memory, u8, 0x48) // add rsp, 72
+    write_value(*executable_memory, u8, 0x83)
+    write_value(*executable_memory, u8, 0xC4)
+    write_value(*executable_memory, s8, 0x48)
+
+    write_value(*executable_memory, u8, 0xC3) // ret
+    
+    enter_jit = executable_memory
+    
+    write_value(*executable_memory, u8, 0x48) // sub rsp, 72
+    write_value(*executable_memory, u8, 0x83)
+    write_value(*executable_memory, u8, 0xEC)
+    write_value(*executable_memory, s8, 0x48)
+    
+    write_value(*executable_memory, u8, 0x48) // mov qword ptr[rsp+96], rcx
+    write_value(*executable_memory, u8, 0x89)
+    write_value(*executable_memory, u8, 0x4C)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x60)
+    
+    write_value(*executable_memory, u8, 0x48) // mov qword ptr[rsp], rbx
+    write_value(*executable_memory, u8, 0x89)
+    write_value(*executable_memory, u8, 0x1C)
+    write_value(*executable_memory, u8, 0x24)
+    
+    write_value(*executable_memory, u8, 0x48) // mov qword ptr[rsp+8], rbp
+    write_value(*executable_memory, u8, 0x89)
+    write_value(*executable_memory, u8, 0x6C)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x08)
+    
+    write_value(*executable_memory, u8, 0x48) // mov qword ptr[rsp+16], rsi
+    write_value(*executable_memory, u8, 0x89)
+    write_value(*executable_memory, u8, 0x74)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x10)
+    
+    write_value(*executable_memory, u8, 0x48) // mov qword ptr[rsp+24], rdi
+    write_value(*executable_memory, u8, 0x89)
+    write_value(*executable_memory, u8, 0x7C)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x18)
+    
+    write_value(*executable_memory, u8, 0x4C) // mov qword ptr[rsp+32], r12
+    write_value(*executable_memory, u8, 0x89)
+    write_value(*executable_memory, u8, 0x64)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x20)
+    
+    write_value(*executable_memory, u8, 0x4C) // mov qword ptr[rsp+40], r13
+    write_value(*executable_memory, u8, 0x89)
+    write_value(*executable_memory, u8, 0x6C)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x28)
+    
+    write_value(*executable_memory, u8, 0x4C) // mov qword ptr[rsp+48], r14
+    write_value(*executable_memory, u8, 0x89)
+    write_value(*executable_memory, u8, 0x74)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x30)
+    
+    write_value(*executable_memory, u8, 0x4C) // mov qword ptr[rsp+56], r15
+    write_value(*executable_memory, u8, 0x89)
+    write_value(*executable_memory, u8, 0x7C)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, s8, 0x38)
+    
+    
+    // rbx = memory
+    write_value(*executable_memory, u8, 0x48) // mov rbx, qword ptr[rcx]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x19)
+    
+    // r8 = instruction_addresses
+    write_value(*executable_memory, u8, 0x4C) // mov r8, qword ptr[rcx+8]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x41)
+    write_value(*executable_memory, s8, 0x08)
+    
+    // r9 = remaining_cycles
+    write_value(*executable_memory, u8, 0x4C) // mov r9, qword ptr[rcx+32]
+    write_value(*executable_memory, u8, 0x8B)
+    write_value(*executable_memory, u8, 0x49)
+    write_value(*executable_memory, s8, 0x20)
+    
+    // rdx = pc
+    write_value(*executable_memory, u8, 0x0F) // movzx edx, word ptr[rcx+40]
+    write_value(*executable_memory, u8, 0xB7)
+    write_value(*executable_memory, u8, 0x51)
+    write_value(*executable_memory, s8, 0x28)
+    
+    // rbp = sp
+    write_value(*executable_memory, u8, 0x0F) // movzx ebp, byte ptr[rcx+42]
+    write_value(*executable_memory, u8, 0xB6)
+    write_value(*executable_memory, u8, 0x69)
+    write_value(*executable_memory, s8, 0x2A)
+    
+    // rax = a
+    write_value(*executable_memory, u8, 0x0F) // movzx eax, byte ptr[rcx+43]
+    write_value(*executable_memory, u8, 0xB6)
+    write_value(*executable_memory, u8, 0x41)
+    write_value(*executable_memory, s8, 0x2B)
+    
+    // rsi = x
+    write_value(*executable_memory, u8, 0x0F) // movzx esi, byte ptr[rcx+44]
+    write_value(*executable_memory, u8, 0xB6)
+    write_value(*executable_memory, u8, 0x71)
+    write_value(*executable_memory, s8, 0x2C)
+    
+    // rdi = y
+    write_value(*executable_memory, u8, 0x4C) // movzx r14, byte ptr[rcx+45]
+    write_value(*executable_memory, u8, 0x0F)
+    write_value(*executable_memory, u8, 0xB6)
+    write_value(*executable_memory, u8, 0x71)
+    write_value(*executable_memory, s8, 0x2D)
+    
+    // rcx = flags
+    write_value(*executable_memory, u8, 0x0F) // movzx r15, byte ptr[rcx+46]
+    write_value(*executable_memory, u8, 0xB6)
+    write_value(*executable_memory, u8, 0x49)
+    write_value(*executable_memory, s8, 0x2E)
+    
+    // r11 = C
+    write_value(*executable_memory, u8, 0xF6) // test cl, 0x01
+    write_value(*executable_memory, u8, 0xC1)
+    write_value(*executable_memory, s8, 0x01)
+    write_value(*executable_memory, u8, 0x41) // setnz r11b
+    write_value(*executable_memory, u8, 0x0F)
+    write_value(*executable_memory, u8, 0x95)
+    write_value(*executable_memory, u8, 0xC3)
+    
+    // r12 = Z
+    write_value(*executable_memory, u8, 0xF6) // test cl, 0x02
+    write_value(*executable_memory, u8, 0xC1)
+    write_value(*executable_memory, s8, 0x02)
+    write_value(*executable_memory, u8, 0x41) // setnz r12b
+    write_value(*executable_memory, u8, 0x0F)
+    write_value(*executable_memory, u8, 0x95)
+    write_value(*executable_memory, u8, 0xC4)
+    
+    // r13 = V
+    write_value(*executable_memory, u8, 0xF6) // test cl, 0x40
+    write_value(*executable_memory, u8, 0xC1)
+    write_value(*executable_memory, s8, 0x40)
+    write_value(*executable_memory, u8, 0x41) // setnz r13b
+    write_value(*executable_memory, u8, 0x0F)
+    write_value(*executable_memory, u8, 0x95)
+    write_value(*executable_memory, u8, 0xC5)
+    
+    // r14 = N
+    write_value(*executable_memory, u8, 0x84) // test cl, cl
+    write_value(*executable_memory, u8, 0xC9)
+    write_value(*executable_memory, u8, 0x41) // sets r12b
+    write_value(*executable_memory, u8, 0x0F)
+    write_value(*executable_memory, u8, 0x98)
+    write_value(*executable_memory, u8, 0xC6)
+    
+    // jump to instruction_addresses[pc]
+    write_value(*executable_memory, u8, 0x41) // jmp qword ptr[r8 + rdx*8]
+    write_value(*executable_memory, u8, 0xFF)
+    write_value(*executable_memory, u8, 0x24)
+    write_value(*executable_memory, u8, 0xD0)
+    
+    instruction_addresses = new_array(*void, 65536).data
+    
+    reachable_instructions := new_array(bool, 65536)
+    defer free_array(reachable_instructions)
+    
+    reachable_instruction_stack: [..]u16
+    defer free_array(reachable_instruction_stack)
+    array_add(*reachable_instruction_stack, <<cast(*u16)*memory[0xFFFA])
+    array_add(*reachable_instruction_stack, <<cast(*u16)*memory[0xFFFC])
+    array_add(*reachable_instruction_stack, <<cast(*u16)*memory[0xFFFE])
+    
+    while reachable_instruction_stack {
+        address := array_pop(*reachable_instruction_stack)
+        if !allow_jit_execution(address)
+            continue;        
+    }
+    
+    for 65536 {
+        instruction_addresses[it] = executable_memory
+        write_value(*executable_memory, u8, 0xBA) // mov edx, it
+        write_value(*executable_memory, s32, cast() it)
+        
+        if !reachable_instructions[it] {
+            write_jump_to_exit(cpu, *executable_memory)
+            continue;
+        }
+    }
+}
+
+main :: () {
+    cpu: Jit_6502
+    cpu.memory = new_array(u8, 65536).data
+    
+    jit(*cpu)
+    cpu.enter_jit(*cpu)
+}

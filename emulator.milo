@@ -1,0 +1,1525 @@
+#import "Standard"
+#import "File"
+#import "Window"
+#import "GL"
+#import "Sound"
+
+#load "6502.milo"
+
+WIDTH  :: 256
+HEIGHT :: 240
+
+framebuffer: [WIDTH * HEIGHT * 3]u8
+
+VERBOSE := false
+
+ram: [2048]u8
+
+
+RAM_TOP  :: 0x1FFF
+PPU_BASE :: 0x2000
+PPU_TOP  :: 0x3FFF
+APU_BASE :: 0x4000
+APU_TOP  :: 0x401F
+
+PRG_RAM_BASE :: 0x6000
+PRG_RAM_TOP  :: 0x7FFF
+
+prg_rom: []u8
+prg_ram: []u8
+trainer: []u8
+
+chr:            []u8
+palette_ram:    [32]u8
+palette_colors: []u8
+vram:           [2048]u8
+oam:            [256]u8
+
+mapper: u8
+
+input_load_shift_register: u8
+input_shift_register:      u8
+
+// Open bus holds the previous value due to capacitance
+bus_value: u8
+
+ppu_control: enum_flags u8 {
+    NAMETABLE_BASE_MASK       :: 0x03
+    VRAM_INCREMENT_VERTICAL   :: 0x04
+    SPRITE_PATTERN_TABLE_BASE :: 0x08
+    TILE_PATTERN_TABLE_BASE   :: 0x10
+    LARGE_SPRITES             :: 0x20
+    MASTER_MODE               :: 0x40
+    NMI_ENABLE                :: 0x80
+}
+
+ppu_mask: enum_flags u8 {
+    GRAYSCALE         :: 0x01
+    LEFT_8_PX_TILES   :: 0x02
+    LEFT_8_PX_SPRITES :: 0x04
+    TILES             :: 0x08
+    SPRITES           :: 0x10
+    EMPHASIZE_RED     :: 0x20
+    EMPHASIZE_GREEN   :: 0x40
+    EMPHASIZE_BLUE    :: 0x80
+}
+
+ppu_status: enum_flags u8 {
+    SPRITE_OVERFLOW :: 0x20
+    SPRITE_0_HIT    :: 0x40
+    VERTICAL_BLANK  :: 0x80
+}
+
+oam_address: u8
+
+ppu_w: bool
+ppu_x: u8
+ppu_t: u16
+ppu_v: u16
+
+vertical_mirror: bool
+
+ppu_read_buffer: u8
+
+oam_dma_address: u16
+
+dma_state: enum {
+    IDLE
+    WAIT
+    READ
+    WRITE
+}
+
+apu_regs: [32]u8
+
+Apu_Status :: enum_flags u8 {
+    PULSE_1   :: 0x01
+    PULSE_2   :: 0x02
+    TRIANGLE  :: 0x04
+    NOISE     :: 0x08
+    DMC       :: 0x10
+    FRAME_IRQ :: 0x40
+    DMC_IRQ   :: 0x80
+    
+    CHANNEL_MASK :: PULSE_1 | PULSE_2 | TRIANGLE | NOISE | DMC
+}
+
+apu_status: Apu_Status
+
+apu_frame_counter_control: enum_flags u8 {
+    IRQ_DISABLE :: 0x40
+    MODE_5      :: 0x80
+}
+
+ppu_read :: (address: u16) -> u8 {
+    if address < 0x2000 {
+        return chr[address & (chr.count - 1)]
+    } else if address < 0x3F00 {
+        adjusted_address := address
+        
+        if !vertical_mirror {
+            adjusted_address &= ~cast(u16) 0x400
+            adjusted_address |= (adjusted_address & 0x800) >> 1
+        }
+        
+        return vram[adjusted_address & (vram.count - 1)]
+    } else {
+        palette_index := address & (palette_ram.count - 1)
+        
+        if (palette_index & 3) == 0 {
+            palette_index &= ~cast(u16) 0x0010
+        }
+        
+        if ppu_mask & .GRAYSCALE
+            return palette_ram[palette_index] & 0x30
+        else
+            return palette_ram[palette_index]
+    }
+}
+
+ppu_write :: (address: u16, value: u8) {
+    if address < 0x2000 {
+        chr[address & (chr.count - 1)] = value
+    } else if address < 0x3F00 {
+        adjusted_address := address
+        
+        if !vertical_mirror {
+            adjusted_address &= ~cast(u16) 0x400
+            adjusted_address |= (adjusted_address & 0x800) >> 1
+        }
+        
+        vram[adjusted_address & (vram.count - 1)] = value
+    } else {
+        palette_index := address & (palette_ram.count - 1)
+        
+        if (palette_index & 3) == 0 {
+            palette_index &= ~cast(u16) 0x0010
+        }
+        
+        palette_ram[palette_index] = value
+    }
+}
+
+
+oam_read :: () -> u8 {
+    return oam[oam_address]
+}
+
+oam_write :: (value: u8) {
+    oam[oam_address] = value
+    oam_address += 1
+}
+
+
+bus_read :: (address: u16) -> u8 {
+    if address <= RAM_TOP {
+        bus_value = ram[address & (ram.count - 1)]
+    } else if address <= PPU_TOP {
+        if address & 7 == {
+            case 2
+                bus_value = cast() ppu_status
+                ppu_status &= ~.VERTICAL_BLANK
+                ppu_w = false
+            case 4
+                return oam_read()
+            case 7
+                bus_value = ppu_read_buffer
+                ppu_read_buffer = ppu_read(ppu_v)
+                if ppu_v >= 0x3F00 {
+                    bus_value = ppu_read_buffer
+                }
+                
+                if ppu_control & .VRAM_INCREMENT_VERTICAL
+                    ppu_v += 32
+                else
+                    ppu_v += 1
+        }
+    } else if address <= APU_TOP {
+        if address == {
+            case 0x4015
+                status := apu_status
+                apu_status &= ~.FRAME_IRQ
+                
+                // TODO Channel finished flags
+                status &= Apu_Status.FRAME_IRQ | .DMC_IRQ
+                
+                if pulse_1_length_counter && !(apu_regs[0x00] & 0x20)
+                    status |= .PULSE_1
+                if pulse_2_length_counter && !(apu_regs[0x04] & 0x20)
+                    status |= .PULSE_2
+                if triangle_length_counter && !(apu_regs[0x08] & 0x80)
+                    status |= .TRIANGLE
+                if noise_length_counter && !(apu_regs[0x0C] & 0x20)
+                    status |= .NOISE
+                if dmc_bytes_remaining
+                    status |= .DMC
+                
+                bus_value = cast() status
+            case 0x4016 #through
+            case 0x4017
+                bus_value = input_shift_register & 1
+                input_shift_register >>= 1
+        }
+    } else {
+        if address >= PRG_RAM_BASE {
+            if address <= PRG_RAM_TOP {
+                if prg_ram {
+                    bus_value = prg_ram[address & (prg_ram.count - 1)]
+                }
+            } else {
+                bus_value = prg_rom[address & (prg_rom.count - 1)]
+            }
+        }
+    }
+
+    if VERBOSE {
+        error_print("Read ")
+        print_hex(address)
+        error_print(": ")
+        print_hex(bus_value)
+        error_print("\n")
+    }
+    
+    return bus_value
+}
+
+restart_dmc :: () {
+    dmc_bytes_remaining     = cast(u16) apu_regs[0x13] << 4 + 1
+    dmc_address             = 0xC000 | (cast(u16) apu_regs[0x12] << 6)
+}
+
+bus_write :: (address: u16, value: u8) {
+    bus_value = value
+    
+    if address <= RAM_TOP {
+        ram[address & (ram.count - 1)] = bus_value
+    } else if address <= PPU_TOP {
+        if address & 7 == {
+            case 0
+                ppu_control = cast() bus_value
+                
+                ppu_t &= ~cast(u16)0x8C00
+                ppu_t |= cast(u16) (bus_value & 0x03) << 10
+            case 1
+                ppu_mask = cast() bus_value
+            case 3
+                oam_address = bus_value
+            case 4
+                oam_write(bus_value)
+            case 5
+                if ppu_w {
+                    ppu_t &= ~cast(u16) 0xF3E0
+                    ppu_t |= cast(u16) (bus_value & 0x07) << 12
+                    ppu_t |= cast(u16) (bus_value & 0xF8) << 2
+                } else {
+                    ppu_x = bus_value & 7
+                    ppu_t &= ~cast(u16) 0x803F
+                    ppu_t |= bus_value >> 3
+                }
+                ppu_w = !ppu_w
+            case 6
+                if ppu_w {
+                    ppu_t &= ~cast(u16) 0x80FF
+                    ppu_t |= bus_value
+                    ppu_v = ppu_t
+                } else {
+                    ppu_t &= ~cast(u16) 0xFF00
+                    ppu_t |= cast(u16) (bus_value & 0x3F) << 8
+                }
+                ppu_w = !ppu_w
+            case 7
+                ppu_write(ppu_v, bus_value)
+                
+                if ppu_control & .VRAM_INCREMENT_VERTICAL
+                    ppu_v += 32
+                else
+                    ppu_v += 1
+        }
+    } else if address <= APU_TOP {
+        apu_regs[address & (apu_regs.count - 1)] = bus_value
+        
+        if address == {
+            case 0x4001
+                pulse_1_sweep_counter_reload = true
+            case 0x4003
+                pulse_1_sequence_counter = 0
+                pulse_1_envelope.start = true
+                
+                if apu_status & .PULSE_1
+                    pulse_1_length_counter = LENGTH_COUNTER_LUT[bus_value >> 3]
+            case 0x4005
+                pulse_2_sweep_counter_reload = true
+            case 0x4007
+                pulse_2_sequence_counter = 0
+                
+                if apu_status & .PULSE_2
+                    pulse_2_length_counter = LENGTH_COUNTER_LUT[bus_value >> 3]
+            case 0x400B
+                linear_counter_reload = true
+                
+                if apu_status & .TRIANGLE
+                    triangle_length_counter = LENGTH_COUNTER_LUT[bus_value >> 3]
+            case 0x400F
+                noise_envelope.start = true
+                
+                if apu_status & .NOISE
+                    noise_length_counter = LENGTH_COUNTER_LUT[bus_value >> 3]
+            case 0x4011
+                dmc_level = bus_value & 0x7F
+            case 0x4014
+                oam_dma_address = set_hi(bus_value)
+                dma_state = .WAIT
+            case 0x4015
+                apu_status &= ~.CHANNEL_MASK
+                apu_status &= ~.DMC_IRQ
+                apu_status |= cast() bus_value & Apu_Status.CHANNEL_MASK
+                
+                if !(apu_status & .PULSE_1)
+                    pulse_1_length_counter  = 0
+                if !(apu_status & .PULSE_2)
+                    pulse_2_length_counter  = 0
+                if !(apu_status & .TRIANGLE)
+                    triangle_length_counter = 0
+                if !(apu_status & .NOISE)
+                    noise_length_counter    = 0
+                if !(apu_status & .DMC)
+                    dmc_bytes_remaining     = 0
+                else if dmc_bytes_remaining == 0 {
+                    restart_dmc()
+                }
+            case 0x4016
+                input_load_shift_register = bus_value
+            case 0x4017
+                apu_frame_counter_control = cast() bus_value
+                apu_frame_counter = 0
+                
+                if apu_frame_counter_control & .IRQ_DISABLE
+                    apu_status &= ~.FRAME_IRQ
+        }
+    } else {
+        if address >= PRG_RAM_BASE {
+            if address <= PRG_RAM_TOP {
+                if prg_ram {
+                    prg_ram[address & (prg_ram.count - 1)] = bus_value
+                }
+            }
+        }
+    }
+    
+    if VERBOSE {
+        error_print("Write ")
+        print_hex(address)
+        error_print(": ")
+        print_hex(value)
+        error_print("\n")
+    }
+}
+
+set_hi :: (val: u8) -> u16 {
+    return cast(u16) val << 8
+}
+
+hi :: (val: u16) -> u8 {
+    return cast() (val >> 8)
+}
+
+lo :: (val: u16) -> u8 {
+    return cast() val
+}
+
+sign_extend :: (val: u8) -> u16 {
+    return cast() cast(s16) cast(s8) val
+}
+
+Rom_Header :: struct {
+    magic: [4]u8
+    prg_rom_size: u8
+    chr_rom_size: u8
+    
+    flags_6: enum_flags u8 {
+        VERTICAL_MIRRORING :: 0x01
+        TRAINER            :: 0x04
+    }
+    
+    flags_7: enum_flags u8 {
+        NES_2_MASK  :: 0x0C
+        NES_2_VALUE :: 0x08
+    }
+    
+    prg_ram_size: u8
+    
+    flags_9:  u8
+    flags_10: u8
+    padding: [5]u8
+}
+
+cycle_count := 0
+cpu: Cpu_6502
+
+oam_dma_buffer: u8
+
+apu_frame_counter: s64
+
+Envelope :: struct {
+    start:  bool
+    decay_level: u8
+    divider:     u8
+    register:    u8
+}
+
+linear_counter_reload := false
+linear_counter: u8
+
+
+pulse_1_envelope := Envelope.{register = 0x04}
+pulse_2_envelope := Envelope.{register = 0x08}
+noise_envelope   := Envelope.{register = 0x0C}
+
+tick_envelopes :: () {
+    tick_envelope :: (using envelope: *Envelope) {
+        if start {
+            decay_level = 15
+            divider = apu_regs[register] & 0x0F
+            
+            start = false
+        } else {
+            if divider == 0 {
+                if decay_level == 0 {
+                    if apu_regs[register] & 0x20
+                        decay_level = 15
+                } else {
+                    decay_level -= 1
+                }
+            } else {
+                divider -= 1
+            }
+        }
+    }
+    
+    tick_envelope(*pulse_1_envelope)
+    tick_envelope(*pulse_2_envelope)
+    tick_envelope(*noise_envelope)
+    
+    if linear_counter_reload {
+        linear_counter = apu_regs[0x08] & 0x7F
+    } else if linear_counter {
+        linear_counter -= 1
+    }
+    
+    if !(apu_regs[0x08] & 0x80) {
+        linear_counter_reload = false
+    }
+}
+
+muted_by_sweep :: (register_base: u8) -> bool {
+    return pulse_period(register_base) < 8 || sweep_target(register_base) > 0x7FF
+}
+
+tick_length_counters :: () {
+    if pulse_1_length_counter > 0 && !(apu_regs[0x00] & 0x20)
+        pulse_1_length_counter -= 1
+    if pulse_2_length_counter > 0 && !(apu_regs[0x04] & 0x20)
+        pulse_2_length_counter -= 1
+    if triangle_length_counter > 0 && !(apu_regs[0x08] & 0x80)
+        triangle_length_counter -= 1
+    if noise_length_counter > 0 && !(apu_regs[0x0C] & 0x20)
+        noise_length_counter -= 1
+    
+    if pulse_1_sweep_counter == 0 {
+        pulse_1_sweep_counter = (apu_regs[0x01] >> 4) & 0x07
+        pulse_1_sweep_counter_reload = false
+        
+        if (apu_regs[0x01] & 0x80) && (apu_regs[0x01] & 0x07) && !muted_by_sweep(0x00) {
+            target_period := sweep_target(0x00)
+            apu_regs[0x02] = cast() target_period
+            apu_regs[0x03] &= cast() ~0x07
+            apu_regs[0x03] |= hi(target_period)
+        }
+    } else if pulse_1_sweep_counter_reload {
+        pulse_1_sweep_counter = (apu_regs[0x01] >> 4) & 0x07
+        pulse_1_sweep_counter_reload = false
+    } else {
+        pulse_1_sweep_counter -= 1
+    }
+    
+    if pulse_2_sweep_counter == 0 {
+        pulse_2_sweep_counter = (apu_regs[0x05] >> 4) & 0x07
+        pulse_2_sweep_counter_reload = false
+        
+        if (apu_regs[0x05] & 0x80) && (apu_regs[0x05] & 0x07) && !muted_by_sweep(0x04) {
+            target_period := sweep_target(0x04)
+            apu_regs[0x06] = cast() target_period
+            apu_regs[0x07] &= cast() ~0x07
+            apu_regs[0x07] |= hi(target_period)
+        }
+    } else if pulse_2_sweep_counter_reload {
+        pulse_2_sweep_counter = (apu_regs[0x05] >> 4) & 0x07
+        pulse_2_sweep_counter_reload = false
+    } else {
+        pulse_2_sweep_counter -= 1
+    }
+}
+
+pulse_period :: (register_base: u8) -> u16 {
+    return set_hi(apu_regs[register_base + 0x03] & 0x07) | apu_regs[register_base + 0x02]
+}
+
+pulse_1_sweep_counter: u8
+pulse_1_sweep_counter_reload := false
+pulse_2_sweep_counter: u8
+pulse_2_sweep_counter_reload := false
+
+sweep_target :: (register_base: u8) -> u16 {
+    target := pulse_period(register_base)
+    
+    sweep_register := apu_regs[register_base + 0x01]
+    
+    addend := target >> (sweep_register & 0x07)
+    
+    if sweep_register & 0x10 {
+        if register_base == 0 || target - addend == 0
+            return target - addend
+        else
+            return target - addend - 1
+    } else {
+        return target + addend
+    }
+}
+
+hpf1_in:  f32
+hpf1_out: f32
+hpf2_in:  f32
+hpf2_out: f32
+lpf_out:  f32
+
+sample_audio :: () {
+    pulse:    f32
+    triangle: f32
+    noise:    f32
+    dmc := cast(f32) dmc_level
+    
+    if pulse_1_length_counter && !muted_by_sweep(0x00) && ((PULSE_LUT[apu_regs[0x00] >> 6] >> cast() pulse_1_sequence_counter) & 1)
+        pulse += cast() evaluate_envelope(pulse_1_envelope)
+    
+    if pulse_2_length_counter && !muted_by_sweep(0x04) && ((PULSE_LUT[apu_regs[0x04] >> 6] >> cast() pulse_2_sequence_counter) & 1)
+        pulse += cast() evaluate_envelope(pulse_1_envelope)
+    
+    if triangle_length_counter && linear_counter
+        triangle = TRIANGLE_LUT[triangle_sequence_counter]
+    
+    if noise_length_counter && !(noise_lfsr & 1)
+        noise = cast() evaluate_envelope(noise_envelope)
+        
+    out: f32
+    
+    if pulse != 0
+        out += 2876.4 / (81.28 / pulse + 1)
+    
+    if triangle + noise + dmc != 0
+        out += 4793.7 / (1 / (triangle * 0.01216 + noise * 0.008169 + dmc * 0.004471) + 1)
+    
+    LPF_A  :: 0.647
+    HPF1_A :: 0.988
+    HPF2_A :: 0.946
+    
+    hpf1_out = (hpf1_out + out      - hpf1_in) * HPF1_A
+    hpf2_out = (hpf2_out + hpf1_out - hpf2_in) * HPF2_A
+    lpf_out = lpf_out * (1 - LPF_A) + hpf2_out * LPF_A
+    
+    hpf1_in = out
+    hpf2_in = hpf1_out
+    
+    clipped := clamp(lpf_out, -10000, 10000)
+    
+    sample := cast(s16) lpf_out
+    
+    sample_ring_buffer[sample_ring_buffer_write_index % sample_ring_buffer.count] = .{sample, sample}
+    sample_ring_buffer_write_index += 1
+}
+
+pulse_1_sequence_counter := 0
+pulse_1_counter: u16
+
+pulse_2_sequence_counter := 0
+pulse_2_counter: u16
+
+triangle_counter: u16
+triangle_sequence_counter := 0
+
+dmc_counter := 0
+dmc_bits_counter := 8
+dmc_silence := true
+dmc_shifter: u8
+
+noise_counter := 0
+noise_lfsr := 1
+
+NOISE_COUNTER_LUT :: s64.[
+    1, 3, 7, 15, 31, 47, 63, 79, 100, 126, 189, 253, 355, 507, 1016, 4033
+]
+
+PULSE_LUT :: u8.[
+    0b1000_0000,
+    0b1100_0000,
+    0b1111_0000,
+    0b0011_1111
+]
+
+LENGTH_COUNTER_LUT :: u8.[
+    10, 254, 20, 2,  40, 4,  80, 6,  160, 8,  60, 10, 14, 12, 26, 14,
+    12, 16,  24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30
+]
+
+DMC_COUNTER_LUT :: s64.[
+    213, 189, 169, 159, 142, 126, 112, 106, 94, 79, 70, 63, 52, 41, 35, 26
+]
+
+pulse_1_length_counter:  u8
+pulse_2_length_counter:  u8
+triangle_length_counter: u8
+noise_length_counter:    u8
+dmc_bytes_remaining:     u16
+
+dmc_level:   u8
+dmc_address: u16
+
+
+evaluate_envelope :: (using envelope: Envelope) -> s16 {
+    if apu_regs[register] & 0x10 {
+        return cast() (apu_regs[register] & 0x0F)
+    } else {
+        return cast() decay_level
+    }
+}
+
+tick_apu :: () {
+    if apu_frame_counter == {
+        case 3728
+            tick_envelopes()
+        case 7456
+            tick_envelopes()
+            tick_length_counters()
+        case 11186
+            tick_envelopes()
+        case 14914
+            if !(apu_frame_counter_control & .MODE_5) {
+                tick_envelopes()
+                tick_length_counters()
+                
+                if !(apu_frame_counter_control & .IRQ_DISABLE)
+                    apu_status |= .FRAME_IRQ
+                    
+                apu_frame_counter = -1
+            }
+        case 18640
+            tick_envelopes()
+            tick_length_counters()
+            apu_frame_counter = -1
+    }
+    
+    apu_frame_counter += 1
+    
+    if pulse_1_counter == 0 {
+        pulse_1_counter = pulse_period(0x00)
+        pulse_1_sequence_counter -= 1
+        pulse_1_sequence_counter &= 7
+    } else {
+        pulse_1_counter -= 1
+    }
+    
+    if pulse_2_counter == 0 {
+        pulse_2_counter = pulse_period(0x04)
+        pulse_2_sequence_counter -= 1
+        pulse_2_sequence_counter &= 7
+    } else {
+        pulse_2_counter -= 1
+    }
+    
+    if noise_counter == 0 {
+        noise_counter = NOISE_COUNTER_LUT[apu_regs[0x0E] & 0x0F]
+        
+        feedback := (noise_lfsr ^ (noise_lfsr >> 1)) & 1
+        if apu_regs[0x0E] & 0x80
+            feedback = (noise_lfsr ^ (noise_lfsr >> 6)) & 1
+        
+        noise_lfsr >>= 1
+        noise_lfsr |= feedback << 14
+    } else {
+        noise_counter -= 1
+    }
+    
+    if dmc_counter == 0 {
+        dmc_counter = DMC_COUNTER_LUT[apu_regs[0x10] & 0xF]
+        
+        if !dmc_silence {
+            if dmc_shifter & 1 {
+                if dmc_level <= 125
+                    dmc_level += 2
+            } else {
+                if dmc_level >= 2
+                    dmc_level -= 2
+            }
+        }
+        dmc_shifter >>= 1
+        
+        dmc_bits_counter -= 1
+        if dmc_bits_counter == 0 {
+            dmc_silence = dmc_sample_buffer_empty
+            dmc_shifter = dmc_sample_buffer
+            dmc_sample_buffer_empty = true
+        }
+    } else {
+        dmc_counter -= 1
+    }
+}
+
+audio_sample_interval := 0
+frame_cycle_count := 0
+
+TRIANGLE_LUT :: f32.[
+    15, 14, 13, 12, 11, 10, 9,  8,  7,  6, 5,  4,  3,  2,  1,  0,
+    0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15
+]
+
+apu_dma_state: enum u8 {
+    IDLE
+    WAIT
+    READ
+}
+
+dmc_sample_buffer: u8
+dmc_sample_buffer_empty := true
+
+maybe_tick_cpu :: () {
+    defer cycle_count += 1
+    
+    if frame_cycle_count % audio_sample_interval == 0
+        sample_audio()
+        
+    frame_cycle_count += 1
+    
+    if cycle_count % 3
+        return;
+        
+    if triangle_counter == 0 {
+        if triangle_length_counter && linear_counter {
+            if triangle_sequence_counter == 31 {
+                triangle_sequence_counter = 0
+            } else {
+                triangle_sequence_counter += 1
+            }
+        }
+        
+        triangle_counter = pulse_period(0x08)
+    } else {
+        triangle_counter -= 1
+    }
+    
+    
+    if input_load_shift_register & 1 {
+        input_shift_register = 0
+        
+        if window.keys[cast(u8) Key.SPACE]
+            input_shift_register |= 0x01
+        if window.keys[cast(u8) Key.CONTROL]
+            input_shift_register |= 0x02
+        if window.keys[cast(u8) Key.ESCAPE]
+            input_shift_register |= 0x04
+        if window.keys[cast(u8) Key.ENTER]
+            input_shift_register |= 0x08
+        if window.keys[cast(u8) Key.UP]
+            input_shift_register |= 0x10
+        if window.keys[cast(u8) Key.DOWN]
+            input_shift_register |= 0x20
+        if window.keys[cast(u8) Key.LEFT]
+            input_shift_register |= 0x40
+        if window.keys[cast(u8) Key.RIGHT]
+            input_shift_register |= 0x80
+    
+    }
+    
+    if cycle_count % 6 == 0
+        tick_apu()
+        
+    if dmc_sample_buffer_empty && dmc_bytes_remaining {
+        apu_dma_state = .WAIT
+    }
+    
+    nmi := (ppu_control & .NMI_ENABLE) && (ppu_status & .VERTICAL_BLANK)
+    cpu.do_nmi |= nmi & !cpu.prev_nmi
+    cpu.prev_nmi = nmi
+
+    if apu_dma_state == {
+        case .IDLE
+            if dma_state == {
+                case .IDLE
+                    step_processor(*cpu, irq = cast() (apu_status & .FRAME_IRQ))
+                case .WAIT
+                    if cycle_count % 6 == 0 {
+                        dma_state = .READ
+                    }
+                    bus_read(oam_dma_address) // Technically not correct but _shrug_
+                case .READ
+                    oam_dma_buffer = bus_read(oam_dma_address)
+                    dma_state = .WRITE
+                case .WRITE
+                    bus_write(0x2004, oam_dma_buffer)
+                    oam_dma_address += 1
+                    
+                    if oam_dma_address & 0xFF
+                        dma_state = .READ
+                    else
+                        dma_state = .IDLE
+            }
+        case .WAIT
+            if cycle_count % 6 == 0 {
+                apu_dma_state = .READ
+            }
+            bus_read(dmc_address) // Technically not correct but _shrug_
+        case .READ
+            dmc_sample_buffer = bus_read(dmc_address)
+            dmc_sample_buffer_empty = false
+            dmc_address += 1
+            dmc_address |= 0x8000
+            dmc_bytes_remaining -= 1
+            apu_dma_state = .IDLE
+            
+            if !dmc_bytes_remaining {
+                if apu_regs[0x10] & 0x40
+                    restart_dmc()
+                else if apu_regs[0x10] & 0x80
+                    apu_status |= .DMC_IRQ
+            }
+    }
+}
+
+Tile_Renderer :: struct {
+    palette:  u8
+    
+    palette_shifter: u16
+    pattern_low:     u16
+    pattern_high:    u16
+}
+
+set_tile :: (using renderer: *Tile_Renderer, palette_: u8, pattern_low_: u8, pattern_high_: u8) {
+    palette = palette_
+    pattern_low  &= 0xFF00
+    pattern_high &= 0xFF00
+    pattern_low  |= pattern_low_
+    pattern_high |= pattern_high_
+    
+    if ppu_mask & .TILES {
+        if (ppu_v & 0x1F) == 0x1F {
+            ppu_v &= ~cast(u16) 0x1F
+            ppu_v ^= 0x0400
+        } else {
+            ppu_v += 1
+        }
+    }
+}
+
+next_tile_color :: (using renderer: *Tile_Renderer) -> u8 {
+    low_bit    := (pattern_low << ppu_x) >> 15
+    middle_bit := (pattern_high << ppu_x) >> 15
+    high_bits  := (palette_shifter << (ppu_x * 2)) >> 14
+    
+    index := low_bit | (middle_bit << 1) | (high_bits << 2)
+    
+    pattern_low     <<= 1
+    pattern_high    <<= 1
+    palette_shifter <<= 2
+    palette_shifter |= cast(u16) palette
+    
+    if ppu_mask & .TILES
+        return cast() index
+    else
+        return 0
+    
+}
+
+Loaded_Sprite :: struct {
+    id: u8
+    y:  u8
+    x:  u8
+    attributes: enum_flags u8 {
+        PALETTE_MASK    :: 0x03
+        PRIORITY        :: 0x20
+        FLIP_HORIZONTAL :: 0x40
+        FLIP_VERTICAL   :: 0x80
+    }
+    tile:         u8
+    pattern_low:  u8
+    pattern_high: u8
+}
+
+apply_tile_color :: (tile_index: u8, x: s64, y: s64, index: u8, sprites: []Loaded_Sprite) {
+    tile_palette_index := index & 0xF
+    
+    if index & 3 == 0 || (x < 8 && (ppu_mask & .LEFT_8_PX_TILES)) {
+        tile_palette_index = 0
+    }
+    
+    sprite_palette_index: u8 = 0
+    sprite_attributes: type_of(sprites[0].attributes)
+    
+    if ppu_mask & .SPRITES && (x >= 8 || !(ppu_mask & .LEFT_8_PX_SPRITES)) {
+        for sprites {
+            column := x - cast() it.x
+        
+            if column < 0 || column >= 8
+                continue;
+            
+            if !(it.attributes & .FLIP_HORIZONTAL)
+                column = 7 - column
+            
+            low_bit    := (it.pattern_low  >> cast() column) & 1
+            middle_bit := (it.pattern_high >> cast() column) & 1
+            high_bits  := cast(u8) (it.attributes & .PALETTE_MASK)
+            
+            palette_index := low_bit | (middle_bit << 1) | (high_bits << 2) | 0x10
+            if palette_index & 3 {
+                sprite_palette_index = palette_index
+                sprite_attributes    = it.attributes
+                
+                if it.id == 0 && tile_palette_index && x != 255
+                    ppu_status |= .SPRITE_0_HIT
+                
+                break
+            }
+        }
+    }
+    
+    palette_index := tile_palette_index
+    
+    if sprite_attributes & .PRIORITY {
+        if !tile_palette_index
+            palette_index = sprite_palette_index
+    } else {
+        if sprite_palette_index
+            palette_index = sprite_palette_index
+    }
+    
+    if !(ppu_mask & .TILES) && !(ppu_mask & .SPRITES) && ppu_v > 0x3F00 {
+        palette_index = cast() (ppu_v & 0x1F)
+    }
+    
+    color_index: u16 = palette_ram[palette_index] & 0x3F
+    
+    if ppu_mask & .GRAYSCALE {
+        color_index &= 0x30
+    }
+    
+    
+    color_index |= (cast(u16) ppu_mask & 0xE0) << 1
+    framebuffer[y * WIDTH * 3 + x * 3 + 0] = palette_colors[color_index * 3 + 0]
+    framebuffer[y * WIDTH * 3 + x * 3 + 1] = palette_colors[color_index * 3 + 1]
+    framebuffer[y * WIDTH * 3 + x * 3 + 2] = palette_colors[color_index * 3 + 2]
+    /*
+    framebuffer[y * WIDTH * 3 + x * 3 + 0] = tile_index
+    framebuffer[y * WIDTH * 3 + x * 3 + 1] = tile_index
+    framebuffer[y * WIDTH * 3 + x * 3 + 2] = tile_index
+    */
+    
+}
+
+window: *Window
+
+
+sample_ring_buffer: [65536]Sample
+sample_ring_buffer_write_index: u64
+
+sample_index_offset := -1
+
+extra_sample_count: s64
+    
+SAMPLES_PER_FRAME :: SAMPLE_RATE / 60
+
+fill_samples :: (samples: []Sample, sample_index: u64) {
+    if sample_index_offset == -1 {
+        sample_index_offset = cast() sample_index
+    }
+    
+    extra_sample_count = cast(s64) sample_ring_buffer_write_index - (cast(s64) sample_index - sample_index_offset)
+    if extra_sample_count < cast() (SAMPLES_PER_FRAME * 1.5) {
+        sample_index_offset -= (extra_sample_count - SAMPLES_PER_FRAME * 3)
+        
+        
+        extra_sample_count = cast(s64) sample_ring_buffer_write_index - (cast(s64) sample_index - sample_index_offset)
+        print("Sadge!\n")
+    }
+    /*
+    if extra_sample_count < 0 {
+        //sample_index_offset += extra_sample_count + 800
+    }
+    */
+    //print("%\n", extra_sample_count)
+    
+    read_index := (sample_index - cast() sample_index_offset) % sample_ring_buffer.count
+    
+    if read_index + samples.count > sample_ring_buffer.count {
+        first_block_count := sample_ring_buffer.count - read_index
+        
+        memory_copy(samples.data, *sample_ring_buffer[read_index], first_block_count * size_of(Sample))
+        memory_copy(*samples[first_block_count], sample_ring_buffer.data, (samples.count - first_block_count) * size_of(Sample))
+    } else {
+        memory_copy(samples.data, *sample_ring_buffer[read_index], samples.count * size_of(Sample))
+    }
+}
+
+main :: () {
+    arguments := get_command_line_arguments()
+    
+    if !arguments {
+        print("Usage: emulator <rom>\n")
+        exit(1)
+    } else if arguments.count != 2 {
+        print("Usage: % <rom>\n", arguments[0])
+        exit(1)
+    }
+    
+    data, success := read_entire_file(arguments[1])
+    
+    if !success {
+        print("Failed to read file %\n", arguments[1])
+        exit(1)
+    }
+    
+    if data.count < size_of(Rom_Header) {
+        print("Invalid ROM file: Too small for header\n")
+        exit(1)
+    }
+    
+    using rom_header := cast(*Rom_Header) data.data
+    data = data[size_of(Rom_Header)..]
+    
+    if magic[0] != 'N' || magic[1] != 'E' || magic[2] != 'S' || magic[3] != 0x1A {
+        print("Invalid ROM file: Incorrect magic\n")
+        exit(1)
+    }
+    
+    if flags_6 & .TRAINER {
+        if data.count < 512 {
+            print("Invalid ROM file: Not enough trainer data\n")
+            exit(1)
+        }
+        
+        print("Trainer found\n")
+        trainer = data[..512]
+        data = data[512..]
+    }
+    
+    vertical_mirror = cast() (flags_6 & .VERTICAL_MIRRORING)
+    
+    prg_rom_bytes := cast(u64) prg_rom_size * 16384
+    if data.count < prg_rom_bytes {
+        print("Invalid ROM file: Not enough PRG ROM data\n")
+        exit(1)
+    }
+    prg_rom = data[..prg_rom_bytes]
+    data = data[prg_rom_bytes..]
+    
+    if chr_rom_size {
+        chr_rom_bytes := cast(u64) chr_rom_size * 8192
+        if data.count < chr_rom_bytes {
+            print("Invalid ROM file: Not enough CHR ROM data\n")
+            exit(1)
+        }
+        chr = data[..chr_rom_bytes]
+        data = data[chr_rom_bytes..]
+    } else {
+        chr = new_array(u8, 8192)
+    }
+    
+    if data {
+        print("WARNING: % bytes of unknown data at end of ROM file\n", data.count)
+    }
+    
+    prg_ram = new_array(u8, cast(u64) min(prg_ram_size, 1) * 8192)
+    
+    mapper = (cast(u8) flags_6 >> 4) | (cast(u8) flags_7 & 0xF0)
+    
+    if mapper == {
+        case 0
+            // Do nothing
+        else
+            print("Unsupported mapper: %\n", mapper)
+            exit(1)
+    }
+    print("Mapper %\n", mapper)
+    
+    palette_colors, success = read_entire_file("2C02.pal")
+    if !success {
+        print("Failed to read palette file 2C02.pal\n")
+        exit(1)
+    }
+    
+    if palette_colors.count < 64 * 8 * 3 {
+        print("Palette file too small\n")
+        exit(1)
+    }
+    
+    window = create_window("Emulator", WIDTH * 4, HEIGHT * 4, resizable = false)
+    if !window {
+        print("Failed to create window\n")
+        exit(1)
+    }
+    
+    gl_context: GL_Context
+    
+    success, gl_context = create_gl(window, depth_bits = 0)
+    if !success {
+        print("Failed to create GL Context\n")
+        exit(1)
+    }
+    
+    make_context_current(gl_context)
+    
+    load_gl_extensions()
+    
+    set_swap_interval(1)
+    
+    glEnable(GL_TEXTURE_2D)
+    
+    texture_id: u32
+    glGenTextures(1, *texture_id)
+    glBindTexture(GL_TEXTURE_2D, texture_id)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP)
+    
+    step_processor(*cpu, reset = true)
+    cycle_counter := 0
+    
+    reset := false
+    
+    if !initialize_sound(window.handle, fill_samples, buffer_length = 2, latency = 0.05) {
+        print("Failed to initialize sound\n")
+        return
+    }
+    
+    sound_started := false
+    
+    
+    show_window(window)
+    
+    tile_renderer: Tile_Renderer
+    
+    frame_time := 1.0 / 60
+    
+    desired_audio_samples := SAMPLES_PER_FRAME
+    
+    tile_index: u8
+    while poll_events(window) {
+        start := get_performance_timer()
+    
+        frame_cycle_count = 0
+        
+        
+        desired_audio_samples = cast() (0.1 * cast() (SAMPLES_PER_FRAME + (SAMPLES_PER_FRAME * 3 - extra_sample_count) / 10)
+            + (0.9 * cast() desired_audio_samples))
+        
+        //print("%\n", extra_sample_count)
+        //print("%\n", desired_audio_samples)
+        
+        audio_sample_interval = (341 * 262) / desired_audio_samples
+        
+        for event: get_window_events(window) {
+            
+        }
+        
+        
+        loaded_sprites: [..]Loaded_Sprite
+        for y: 0..240 {
+            get_tile_index :: () -> u8 {
+                return ppu_read(0x2000 | (ppu_v & 0x0FFF))
+            }
+            
+            get_palette_index :: () -> u8 {
+                index := ppu_read(0x23C0 | (ppu_v & 0x0C00) | ((ppu_v >> 4) & 0x0038) | ((ppu_v >> 2) & 0x0007))
+                
+                index >>= cast() ((ppu_v & 0x0002) | ((ppu_v & 0x0040) >> 4))
+                return index & 3
+            }
+            
+            get_pattern_table_address :: (tile_index: u8, y: u8, high_table: bool) -> u16 {
+                pattern_table_address := y | (cast(u16) tile_index << 4)
+                
+                if high_table {
+                    pattern_table_address |= 0x1000
+                }
+                
+                return pattern_table_address
+            }
+            
+            for 0..1 {
+                maybe_tick_cpu()
+            }
+            
+            x := 0
+            for 32 /* 1..257 */ {
+                tile_color := next_tile_color(*tile_renderer)
+                apply_tile_color(tile_index, x, y, tile_color, loaded_sprites)
+                x += 1
+                maybe_tick_cpu()
+                tile_color = next_tile_color(*tile_renderer)
+                apply_tile_color(tile_index, x, y, tile_color, loaded_sprites)
+                x += 1
+                maybe_tick_cpu()
+                
+                tile_index = get_tile_index()
+                
+                tile_color = next_tile_color(*tile_renderer)
+                apply_tile_color(tile_index, x, y, tile_color, loaded_sprites)
+                x += 1
+                maybe_tick_cpu()
+                tile_color = next_tile_color(*tile_renderer)
+                apply_tile_color(tile_index, x, y, tile_color, loaded_sprites)
+                x += 1
+                maybe_tick_cpu()
+                
+                palette_index := get_palette_index()
+                
+                tile_color = next_tile_color(*tile_renderer)
+                apply_tile_color(tile_index, x, y, tile_color, loaded_sprites)
+                x += 1
+                maybe_tick_cpu()
+                tile_color = next_tile_color(*tile_renderer)
+                apply_tile_color(tile_index, x, y, tile_color, loaded_sprites)
+                x += 1
+                maybe_tick_cpu()
+                
+                pattern_table_address := get_pattern_table_address(tile_index, cast() (ppu_v >> 12), cast() (ppu_control & .TILE_PATTERN_TABLE_BASE))
+                pattern_low := ppu_read(pattern_table_address)
+                
+                tile_color = next_tile_color(*tile_renderer)
+                apply_tile_color(tile_index, x, y, tile_color, loaded_sprites)
+                x += 1
+                maybe_tick_cpu()
+                tile_color = next_tile_color(*tile_renderer)
+                apply_tile_color(tile_index, x, y, tile_color, loaded_sprites)
+                x += 1
+                maybe_tick_cpu()
+                
+                pattern_high := ppu_read(pattern_table_address + 8)
+                
+                set_tile(*tile_renderer, palette_index, pattern_low, pattern_high)
+            }
+            
+            loaded_sprites.count = 0
+            sprite_height := 8
+            if ppu_control & .LARGE_SPRITES {
+                sprite_height = 16
+            }
+            for 64 {
+            
+                y_offset := y - cast() oam[it * 4]
+                
+                if y_offset < 0 || y_offset >= sprite_height
+                    continue;
+                
+                sprite := array_push(*loaded_sprites)
+                
+                sprite.id         = cast() it
+                sprite.y          = cast() y_offset
+                sprite.attributes = cast() oam[it * 4 + 2]
+                sprite.tile       = oam[it * 4 + 1]
+                sprite.x          = oam[it * 4 + 3]
+                
+                if sprite.attributes & .FLIP_VERTICAL {
+                    sprite.y = cast() (sprite_height  - 1) - sprite.y
+                }
+                
+                // TODO Sprite overflow flag
+                if loaded_sprites.count == 8
+                    break
+            }
+            
+            for 8 {
+                maybe_tick_cpu()
+                
+                if it == 0 {
+                    if ppu_mask & .TILES {
+                        if (ppu_v & 0x7000) != 0x7000 {
+                            ppu_v += 0x1000
+                        } else {
+                            ppu_v &= ~cast(u16) 0x7000
+                            y := (ppu_v & 0x03E0) >> 5
+                            
+                            if y == 29 {
+                                y = 0
+                                ppu_v ^= 0x0800
+                            } else if y == 31 {
+                                y = 0
+                            } else {
+                                y += 1
+                            }
+                            
+                            ppu_v &= ~cast(u16) 0x03E0
+                            ppu_v |= y << 5
+                        }
+                    }
+                }
+                
+                if it == 0 {
+                    maybe_tick_cpu()
+                    
+                    if ppu_mask & .TILES {
+                        ppu_v &= ~cast(u16) 0x041F
+                        ppu_v |= ppu_t & 0x041F
+                    }
+                }
+                
+                maybe_tick_cpu()
+                maybe_tick_cpu()
+                
+                maybe_tick_cpu()
+                maybe_tick_cpu()
+                
+                
+                if cast() it < loaded_sprites.count {
+                    high_table := cast(bool) (ppu_control & .SPRITE_PATTERN_TABLE_BASE)
+                    
+                    sprite := *loaded_sprites[it]
+                    
+                    if ppu_control & .LARGE_SPRITES {
+                        high_table = cast() (sprite.y & 8)
+                    }
+                    
+                    pattern_table_address := get_pattern_table_address(sprite.tile, sprite.y & 7, high_table)
+                    
+                    sprite.pattern_low = ppu_read(pattern_table_address)
+                    
+                    maybe_tick_cpu()
+                    maybe_tick_cpu()
+                    
+                    sprite.pattern_high = ppu_read(pattern_table_address + 8)
+                    
+                } else {
+                    
+                    maybe_tick_cpu()
+                    maybe_tick_cpu()
+                }
+            }
+            
+            for 2 /* 321..337 */ {
+                maybe_tick_cpu()
+                next_tile_color(*tile_renderer)
+                maybe_tick_cpu()
+                next_tile_color(*tile_renderer)
+                
+                tile_index = get_tile_index()
+                
+                next_tile_color(*tile_renderer)
+                maybe_tick_cpu()
+                next_tile_color(*tile_renderer)
+                maybe_tick_cpu()
+                
+                palette_index := get_palette_index()
+                
+                next_tile_color(*tile_renderer)
+                maybe_tick_cpu()
+                next_tile_color(*tile_renderer)
+                maybe_tick_cpu()
+                
+                pattern_table_address := get_pattern_table_address(tile_index, cast() (ppu_v >> 12), cast() (ppu_control & .TILE_PATTERN_TABLE_BASE))
+                pattern_low := ppu_read(pattern_table_address)
+                
+                next_tile_color(*tile_renderer)
+                maybe_tick_cpu()
+                next_tile_color(*tile_renderer)
+                maybe_tick_cpu()
+                
+                pattern_high := ppu_read(pattern_table_address + 8)
+                
+                set_tile(*tile_renderer, palette_index, pattern_low, pattern_high)
+            }
+            
+            for 337..341 {
+                maybe_tick_cpu()
+            }
+        }
+        
+        for 240..241 {
+            for 0..341 {
+                maybe_tick_cpu()
+            }
+        }
+        
+        for 241..242 {
+            for 0..1 {
+                maybe_tick_cpu()
+            }
+            
+            for 1..2 {
+                ppu_status |= .VERTICAL_BLANK
+                maybe_tick_cpu()
+            }
+            
+            for 2..341 {
+                maybe_tick_cpu()
+            }
+        }
+        
+        for 242..261 {
+            for 0..341 {
+                maybe_tick_cpu()
+            }
+        }
+        
+        for 261..262 {
+            for 0..1 {
+                maybe_tick_cpu()
+            }
+            
+            for 1..2 {
+                ppu_status &= ~.VERTICAL_BLANK
+                ppu_status &= ~.SPRITE_0_HIT
+                maybe_tick_cpu()
+            }
+            
+            for 2..280 {
+                maybe_tick_cpu()
+            }
+            
+            for 280..305 {
+                maybe_tick_cpu()
+                
+                if ppu_mask & .TILES {
+                    ppu_v = ppu_t
+                }
+            }
+            
+            for 305..341 {
+                maybe_tick_cpu()
+            }
+            
+        }
+        
+        if !sound_started {
+            start_sound()
+            sound_started = true
+        }
+        
+        last_sample_index := sample_ring_buffer_write_index % sample_ring_buffer.count - 1
+        if last_sample_index < 0
+            last_sample_index += sample_ring_buffer.count
+        for sample_ring_buffer_write_index..sample_ring_buffer_write_index + cast() (0.1 * SAMPLE_RATE) - cast() desired_audio_samples {
+            sample_ring_buffer[it % sample_ring_buffer.count] = sample_ring_buffer[last_sample_index]
+        }
+        
+        fill_sound(0.1)
+        
+        glViewport(0, 0, cast() window.width, cast() window.height)
+        
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        glOrtho(0, 1, 1, 0, -1, 1)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+        
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, WIDTH, HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, framebuffer.data)
+        
+        
+        glBegin(GL_QUADS)
+        glTexCoord2f(0, 0)
+        glVertex2f(0, 0)
+        
+        glTexCoord2f(1, 0)
+        glVertex2f(1, 0)
+        
+        glTexCoord2f(1, 1)
+        glVertex2f(1, 1)
+        
+        glTexCoord2f(0, 1)
+        glVertex2f(0, 1)
+        glEnd()
+        
+        swap_buffers(gl_context)
+        
+        frame_time = get_performance_timer() - start
+        //print("%\n", frame_time)
+    }
+    
+    /*
+    step_processor(*cpu, reset = true)
+    
+    start_time := get_performance_timer()
+    
+    CYCLES :: 100_000_000
+    
+    for CYCLES {
+        step_processor(*cpu)
+        
+        if VERBOSE {
+            print_state(cpu)
+        }
+    }
+    
+    end_time := get_performance_timer()
+    
+    print("% MHz\n", CYCLES / (end_time - start_time) * 1e-6)
+    */
+    
+    exit(0)
+}
